@@ -78,13 +78,13 @@ def _validated_allowed_origins() -> list[str]:
 
 def create_app() -> FastAPI:
     """Create the FastAPI application wrapping the MCP proxy."""
-    if settings.client.api_key is None:
+    api_key = settings.client.api_key
+    if not api_key:
         raise ValueError(
             "CLIENT_API_KEY must be set so the proxy authenticates incoming clients; "
             "it forwards a privileged service token to the kfinance backend."
         )
 
-    api_key = settings.client.api_key
     allowed_origins = _validated_allowed_origins()
     proxy = build_proxy()
     mcp_http_app = proxy.http_app(path="/mcp", transport="streamable-http")
@@ -97,8 +97,8 @@ def create_app() -> FastAPI:
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         if request.url.path != "/health":
-            expected = f"Bearer {api_key}"
-            provided = request.headers.get("authorization", "")
+            expected = f"Bearer {api_key}".encode()
+            provided = request.headers.get("authorization", "").encode()
             if not secrets.compare_digest(provided, expected):
                 return JSONResponse(
                     {"detail": "Unauthorized"},

@@ -101,6 +101,19 @@ def test_mcp_requires_correct_client_key(
         assert response.json() == {"ok": True}
 
 
+def test_mcp_rejects_non_ascii_authorization_header(
+    fake_proxy: None, configure_client: None
+) -> None:
+    with TestClient(proxy_mcp.create_app()) as client:
+        response = client.post(
+            "/mcp",
+            headers={"Authorization": "Bearer kéy".encode("latin-1")},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized"}
+
+
 def test_cors_allows_configured_origin_without_credentials(
     fake_proxy: None, configure_client: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
