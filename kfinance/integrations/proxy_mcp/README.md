@@ -25,6 +25,8 @@ All configuration is via environment variables (powered by pydantic-settings).
 | `AUTH_OKTA_HOST` | No | `https://kensho.okta.com` | Okta host URL |
 | `AUTH_REFRESH_TOKEN` | Yes* | — | Refresh token for obtaining access tokens (local dev fallback) |
 | `AUTH_REFRESH_URL` | No | `https://kfinance.kensho.com/oauth2/refresh` | Token refresh endpoint |
+| `CLIENT_API_KEY` | Yes | — | Pre-shared key required from MCP clients in the `Authorization` header |
+| `CLIENT_ALLOWED_ORIGINS` | No | `[]` | JSON array of allowed browser origins; `*` is not allowed |
 
 *Either both `AUTH_CLIENT_ID` and `AUTH_PRIVATE_KEY`, or `AUTH_REFRESH_TOKEN` must be set.
 
@@ -63,7 +65,7 @@ Once the server is running, you can test it with the [MCP Inspector](https://mod
 npx @modelcontextprotocol/inspector
 ```
 
-In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport type "Streamable HTTP".
+In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport type "Streamable HTTP" and set the request header `Authorization: Bearer $CLIENT_API_KEY`.
 
 | CLI Option | Default | Description |
 |-----------|---------|-------------|
@@ -72,7 +74,9 @@ In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport t
 
 ## Client Authentication
 
-This skeleton does not authenticate incoming requests from MCP clients. Any client that can reach the proxy can use it. For a production deployment, you would need to add one of the following:
+The proxy requires clients to send `Authorization: Bearer $CLIENT_API_KEY` on every request except `GET /health`. The static client key is checked before requests are forwarded to the backend. Configure browser origins with `CLIENT_ALLOWED_ORIGINS` as a JSON array; wildcard origins are rejected and CORS credentials are disabled.
+
+For a production deployment, you could replace the static-token check with one of the following:
 
 - **OAuth 2.0 Proxy** — The proxy runs its own OAuth flow (e.g., via FastMCP's built-in `OAuthProxy`). Clients register, get redirected to an IdP like Okta, and receive scoped tokens. 
 - **JWT Validation** — Clients bring their own IdP-issued tokens. The proxy validates them against the IdP's JWKS endpoint (FastMCP provides `JWTVerifier` for this). Simpler than a full OAuth flow but requires clients to obtain tokens independently.
@@ -83,7 +87,6 @@ This skeleton does not authenticate incoming requests from MCP clients. Any clie
 
 Beyond client authentication, a production deployment would additionally need:
 
-- CORS configuration tuned to specific origins
 - A more comprehensive health check (the current `GET /health` stub does not verify backend connectivity or token validity)
 - Sentry or equivalent error tracking
 - Redis for shared OAuth client state across replicas (if using OAuth proxy)

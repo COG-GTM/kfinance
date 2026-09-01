@@ -1,9 +1,14 @@
+from collections.abc import Awaitable, Callable
+import secrets
+
 import click
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastmcp import Client
 from fastmcp.server.providers.proxy import FastMCPProxy, ProxyClient
 from fastmcp.utilities.logging import get_logger
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 import uvicorn
 
 from kfinance.integrations.proxy_mcp.auth import (
@@ -60,19 +65,63 @@ def build_proxy() -> FastMCPProxy:
     return FastMCPProxy(client_factory=client_factory, name="Kfinance Proxy")
 
 
+def _validated_allowed_origins() -> list[str]:
+    """Return configured origins, rejecting wildcard CORS."""
+    allowed_origins = settings.client.allowed_origins
+    if "*" in allowed_origins:
+        raise ValueError(
+            "Wildcard CORS origins are not allowed because the proxy forwards a privileged "
+            "service token."
+        )
+    return allowed_origins
+
+
 def create_app() -> FastAPI:
     """Create the FastAPI application wrapping the MCP proxy."""
+    if settings.client.api_key is None:
+        raise ValueError(
+            "CLIENT_API_KEY must be set so the proxy authenticates incoming clients; "
+            "it forwards a privileged service token to the kfinance backend."
+        )
+
+    api_key = settings.client.api_key
+    allowed_origins = _validated_allowed_origins()
     proxy = build_proxy()
     mcp_http_app = proxy.http_app(path="/mcp", transport="streamable-http")
 
     app = FastAPI(lifespan=mcp_http_app.lifespan)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+
+    @app.middleware("http")
+    async def authenticate_client(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        if request.url.path != "/health":
+            expected = f"Bearer {api_key}"
+            provided = request.headers.get("authorization", "")
+            if not secrets.compare_digest(provided, expected):
+                return JSONResponse(
+                    {"detail": "Unauthorized"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        return await call_next(request)
+
+    if allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allowed_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+            allow_headers=[
+                "Authorization",
+                "Content-Type",
+                "Mcp-Session-Id",
+                "Mcp-Protocol-Version",
+                "Last-Event-ID",
+            ],
+            expose_headers=["Mcp-Session-Id"],
+        )
 
     @app.get("/health")
     async def health() -> dict:
