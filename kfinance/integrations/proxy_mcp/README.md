@@ -20,6 +20,8 @@ All configuration is via environment variables (powered by pydantic-settings).
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `BACKEND_URL` | No | `https://kfinance.kensho.com/integrations/mcp` | Remote MCP server URL |
+| `ALLOWED_ORIGINS` | No | (empty) | Comma-separated browser origins allowed to call the proxy. Empty means no cross-origin browser access. Never set to `*` |
+| `ALLOWED_HOSTS` | No | `localhost,127.0.0.1` | Comma-separated `Host` header values the proxy answers to (DNS-rebinding protection) |
 | `AUTH_CLIENT_ID` | Yes* | — | Client ID for key pair authentication |
 | `AUTH_PRIVATE_KEY` | Yes* | — | Private key for key pair authentication |
 | `AUTH_OKTA_HOST` | No | `https://kensho.okta.com` | Okta host URL |
@@ -70,6 +72,15 @@ In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport t
 | `--host` | `127.0.0.1` | Host to bind to |
 | `--port` | `8000` | Port to bind to |
 
+## Browser Access Controls
+
+The proxy holds the operator's credentials, so a web page must never be able to drive it.
+Requests carrying an `Origin` header that is not listed in `ALLOWED_ORIGINS` are rejected
+with `403`, and requests whose `Host` header is not in `ALLOWED_HOSTS` are rejected with
+`400` to block DNS rebinding. CORS response headers are only emitted when
+`ALLOWED_ORIGINS` is configured, and always without `Access-Control-Allow-Credentials`.
+Non-browser MCP clients (which do not send `Origin`) are unaffected.
+
 ## Client Authentication
 
 This skeleton does not authenticate incoming requests from MCP clients. Any client that can reach the proxy can use it. For a production deployment, you would need to add one of the following:
@@ -83,7 +94,6 @@ This skeleton does not authenticate incoming requests from MCP clients. Any clie
 
 Beyond client authentication, a production deployment would additionally need:
 
-- CORS configuration tuned to specific origins
 - A more comprehensive health check (the current `GET /health` stub does not verify backend connectivity or token validity)
 - Sentry or equivalent error tracking
 - Redis for shared OAuth client state across replicas (if using OAuth proxy)
