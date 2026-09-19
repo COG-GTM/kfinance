@@ -29,6 +29,11 @@ from kfinance.integrations.tool_calling.tool_calling_models import (
 )
 
 
+# Suggestion matching costs O(len(input) * number of line items), so inputs longer than any
+# valid line item name are rejected without running it.
+MAX_LINE_ITEM_LENGTH = 128
+
+
 def _find_similar_line_items(
     invalid_item: str, descriptors: dict[str, str], max_suggestions: int = 8
 ) -> list[LineItemScore]:
@@ -42,10 +47,11 @@ def _find_similar_line_items(
     Returns:
         List of LineItemScore objects for the best matches
     """
-    if not descriptors:
+    if not descriptors or len(invalid_item) > MAX_LINE_ITEM_LENGTH:
         return []
 
     invalid_lower = invalid_item.lower()
+    invalid_words = set(invalid_lower.replace("_", " ").split())
     scores: list[LineItemScore] = []
 
     for line_item, description in descriptors.items():
@@ -53,7 +59,6 @@ def _find_similar_line_items(
         name_similarity = SequenceMatcher(None, invalid_lower, line_item.lower()).ratio()
 
         # Check for keyword matches in the line item name
-        invalid_words = set(invalid_lower.replace("_", " ").split())
         item_words = set(line_item.lower().replace("_", " ").split())
         keyword_match_score = len(invalid_words.intersection(item_words)) / max(
             len(invalid_words), 1
@@ -79,8 +84,12 @@ def _find_similar_line_items(
     return [item for item in scores[:max_suggestions] if item.score > 0.1]
 
 
-def _smart_line_item_validator(v: str) -> str:
+def _smart_line_item_validator(v: Any) -> Any:
     """Custom validator that provides intelligent suggestions for invalid line items."""
+    if not isinstance(v, str) or len(v) > MAX_LINE_ITEM_LENGTH:
+        raise ValueError(
+            "Invalid line_item. Please refer to the tool documentation for valid options."
+        )
     if v not in LINE_ITEM_NAMES_AND_ALIASES:
         # Find similar items using pre-computed descriptors
         suggestions = _find_similar_line_items(v, LINE_ITEM_TO_DESCRIPTIONS_MAP)
