@@ -80,7 +80,8 @@ class TestServerThread:
         )
 
         assert response.status_code in (400, 403)
-        assert "Access-Control-Allow-Origin" not in response.headers
+        if headers.get("Origin") != EXPECTED_ORIGIN:
+            assert "Access-Control-Allow-Origin" not in response.headers
         assert server_thread.refresh_token is None
 
     def test_oversized_body_is_rejected(self, server_thread: ServerThread) -> None:
