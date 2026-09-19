@@ -1,9 +1,11 @@
 import asyncio
 import contextlib
+import logging
 from contextlib import nullcontext as does_not_raise
 from datetime import datetime
 from typing import Any
 
+import httpx
 from pydantic import BaseModel, ValidationError
 import pytest
 from pytest_httpx import HTTPXMock
@@ -26,6 +28,7 @@ from kfinance.domains.companies.company_tools import (
     GetInfoFromIdentifiersResp,
 )
 from kfinance.integrations.tool_calling.tool_calling_models import (
+    _sanitize_http_error,
     IdentifierInfoWithResult,
     ToolArgsWithIdentifiers,
     ToolRespWithIdInfoAndErrors,
@@ -57,6 +60,43 @@ class TestIdentifiersCoercion:
         # But an empty list should still fail.
         with pytest.raises(ValidationError):
             ToolArgsWithIdentifiers.model_validate({"identifiers": "[]"})
+
+
+class TestSanitizeHttpError:
+    @staticmethod
+    def build_error(status_code: int, body: str) -> httpx.HTTPStatusError:
+        request = httpx.Request("GET", "https://kfinance.kensho.com/api/v1/info/21719")
+        response = httpx.Response(status_code=status_code, text=body, request=request)
+        return httpx.HTTPStatusError("error", request=request, response=response)
+
+    @pytest.mark.parametrize(
+        "status_code, expected",
+        [
+            pytest.param(404, "No data was found for the requested parameters.", id="known status"),
+            pytest.param(500, "Upstream request failed with status 500.", id="unknown status"),
+        ],
+    )
+    def test_response_body_is_not_disclosed(self, status_code: int, expected: str) -> None:
+        """
+        GIVEN an HTTPStatusError whose body contains backend internals
+        WHEN the error gets sanitized
+        THEN the returned message contains no part of the response body.
+        """
+        body = "Traceback: psycopg2 error on host db-internal-7"
+        message = _sanitize_http_error(self.build_error(status_code, body))
+        assert message == expected
+        assert body not in message
+
+    def test_response_body_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """
+        GIVEN an HTTPStatusError
+        WHEN the error gets sanitized
+        THEN the raw response body ends up in the logs.
+        """
+        body = "Traceback: psycopg2 error on host db-internal-7"
+        with caplog.at_level(logging.WARNING):
+            _sanitize_http_error(self.build_error(500, body))
+        assert body in caplog.text
 
 
 class TestGetEndpointsFromToolCallsWithGrounding:
