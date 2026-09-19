@@ -1,5 +1,6 @@
 import httpx
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from pydantic import ValidationError
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -9,7 +10,9 @@ from kfinance.conftest import FAKE_COMPANY_1_ID_TRIPLE, FAKE_COMPANY_2_ID_TRIPLE
 from kfinance.domains.companies.company_models import COMPANY_ID_PREFIX
 from kfinance.domains.line_items.line_item_models import CalendarType, LineItemResp, LineItemScore
 from kfinance.domains.line_items.line_item_tools import (
+    MAX_LINE_ITEM_LENGTH,
     GetFinancialLineItemFromIdentifiers,
+    GetFinancialLineItemFromIdentifiersArgs,
     GetFinancialLineItemFromIdentifiersResp,
     _find_similar_line_items,
     fetch_line_item_from_company_ids,
@@ -358,6 +361,57 @@ class TestFindSimilarLineItems:
             assert isinstance(item.score, float)
             assert item.name in self.TEST_DESCRIPTORS
             assert item.description == self.TEST_DESCRIPTORS[item.name]
+
+
+class TestOversizedLineItem:
+    """Tests that oversized line items skip fuzzy matching."""
+
+    def test_oversized_input_returns_no_suggestions(self) -> None:
+        """
+        GIVEN a line item longer than MAX_LINE_ITEM_LENGTH
+        WHEN searching for similar line items
+        THEN no suggestions are returned
+        """
+        oversized = "revenue" * MAX_LINE_ITEM_LENGTH
+        assert _find_similar_line_items(oversized, TestFindSimilarLineItems.TEST_DESCRIPTORS) == []
+
+    def test_oversized_input_rejected_by_validator(self) -> None:
+        """
+        GIVEN a line item longer than MAX_LINE_ITEM_LENGTH
+        WHEN validating tool args
+        THEN validation fails without suggestions
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            GetFinancialLineItemFromIdentifiersArgs.model_validate(
+                {"identifiers": ["SPGI"], "line_item": "a" * (MAX_LINE_ITEM_LENGTH + 1)}
+            )
+
+        assert "at most" in str(exc_info.value)
+        assert "Did you mean" not in str(exc_info.value)
+
+    def test_non_string_input_rejected_by_validator(self) -> None:
+        """
+        GIVEN a non-string line item
+        WHEN validating tool args
+        THEN validation fails instead of raising in the fuzzy matcher
+        """
+        with pytest.raises(ValidationError):
+            GetFinancialLineItemFromIdentifiersArgs.model_validate(
+                {"identifiers": ["SPGI"], "line_item": 123}
+            )
+
+    def test_invalid_line_item_within_limit_still_suggests(self) -> None:
+        """
+        GIVEN a short invalid line item
+        WHEN validating tool args
+        THEN suggestions are still included in the error
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            GetFinancialLineItemFromIdentifiersArgs.model_validate(
+                {"identifiers": ["SPGI"], "line_item": "revenues"}
+            )
+
+        assert "Did you mean" in str(exc_info.value)
 
 
 def test_sale_line_item_dataitemids_not_swapped() -> None:

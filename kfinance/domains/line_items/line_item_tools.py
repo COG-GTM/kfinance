@@ -29,10 +29,21 @@ from kfinance.integrations.tool_calling.tool_calling_models import (
 )
 
 
+# Longest valid line item name or alias, plus headroom for near misses. Candidates longer
+# than this cannot be typos of a valid name, so they skip fuzzy matching entirely. Fuzzy
+# matching is O(len(candidate) * len(name)) per descriptor, so an unbounded candidate would
+# let a single request consume an unbounded amount of CPU.
+MAX_LINE_ITEM_LENGTH = 128
+
+LINE_ITEM_NAMES_AND_ALIASES_SET = frozenset(LINE_ITEM_NAMES_AND_ALIASES)
+
+
 def _find_similar_line_items(
     invalid_item: str, descriptors: dict[str, str], max_suggestions: int = 8
 ) -> list[LineItemScore]:
     """Find similar line items using keyword matching and string similarity.
+
+    Candidates longer than MAX_LINE_ITEM_LENGTH get no suggestions.
 
     Args:
         invalid_item: The invalid line item provided by the user
@@ -42,18 +53,21 @@ def _find_similar_line_items(
     Returns:
         List of LineItemScore objects for the best matches
     """
-    if not descriptors:
+    if not descriptors or len(invalid_item) > MAX_LINE_ITEM_LENGTH:
         return []
 
     invalid_lower = invalid_item.lower()
+    invalid_words = set(invalid_lower.replace("_", " ").split())
+    matcher = SequenceMatcher(None)
+    matcher.set_seq1(invalid_lower)
     scores: list[LineItemScore] = []
 
     for line_item, description in descriptors.items():
         # Calculate similarity scores
-        name_similarity = SequenceMatcher(None, invalid_lower, line_item.lower()).ratio()
+        matcher.set_seq2(line_item.lower())
+        name_similarity = matcher.ratio()
 
         # Check for keyword matches in the line item name
-        invalid_words = set(invalid_lower.replace("_", " ").split())
         item_words = set(line_item.lower().replace("_", " ").split())
         keyword_match_score = len(invalid_words.intersection(item_words)) / max(
             len(invalid_words), 1
@@ -79,9 +93,18 @@ def _find_similar_line_items(
     return [item for item in scores[:max_suggestions] if item.score > 0.1]
 
 
-def _smart_line_item_validator(v: str) -> str:
+def _smart_line_item_validator(v: Any) -> str:
     """Custom validator that provides intelligent suggestions for invalid line items."""
-    if v not in LINE_ITEM_NAMES_AND_ALIASES:
+    if not isinstance(v, str):
+        raise ValueError(
+            f"Invalid line_item of type {type(v).__name__}. Please refer to the tool documentation for valid options."
+        )
+    if len(v) > MAX_LINE_ITEM_LENGTH:
+        raise ValueError(
+            f"Invalid line_item: line items are at most {MAX_LINE_ITEM_LENGTH} characters. "
+            "Please refer to the tool documentation for valid options."
+        )
+    if v not in LINE_ITEM_NAMES_AND_ALIASES_SET:
         # Find similar items using pre-computed descriptors
         suggestions = _find_similar_line_items(v, LINE_ITEM_TO_DESCRIPTIONS_MAP)
 
