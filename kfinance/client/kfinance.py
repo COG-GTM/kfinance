@@ -8,7 +8,7 @@ import logging
 import re
 from sys import stdout
 from typing import TYPE_CHECKING, Any, Callable, Iterable, NamedTuple, Optional, overload
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 import webbrowser
 
 from google.genai import types as gapic
@@ -38,7 +38,7 @@ from kfinance.client.models.date_and_period_models import (
     Periodicity,
     YearAndQuarter,
 )
-from kfinance.client.server_thread import ServerThread
+from kfinance.client.server_thread import ServerThread, origin_of
 from kfinance.domains.companies.company_models import IdentificationTriple
 from kfinance.domains.earnings.earning_models import EarningsCall, TranscriptComponent
 from kfinance.domains.mergers_and_acquisitions.merger_and_acquisition_models import (
@@ -1852,13 +1852,15 @@ class Client:
             )
         # method 3 automatic login getting a refresh token
         else:
-            server_thread = ServerThread()
+            login_host = api_host if api_host else DEFAULT_API_HOST
+            server_thread = ServerThread(expected_origin=origin_of(login_host))
             stdout.write("Please login with your credentials.\n")
             server_thread.start()
             webbrowser.open(
                 urljoin(
-                    api_host if api_host else DEFAULT_API_HOST,
-                    f"automated_login?port={server_thread.server_port}",
+                    login_host,
+                    f"automated_login?port={server_thread.server_port}"
+                    f"&state={quote(server_thread.state)}",
                 )
             )
             server_thread.join()
