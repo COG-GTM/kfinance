@@ -11,7 +11,9 @@ from kfinance.domains.line_items.line_item_models import CalendarType, LineItemR
 from kfinance.domains.line_items.line_item_tools import (
     GetFinancialLineItemFromIdentifiers,
     GetFinancialLineItemFromIdentifiersResp,
+    MAX_LINE_ITEM_LENGTH,
     _find_similar_line_items,
+    _smart_line_item_validator,
     fetch_line_item_from_company_ids,
     get_financial_line_item_from_identifiers,
 )
@@ -369,3 +371,44 @@ def test_sale_line_item_dataitemids_not_swapped() -> None:
     invest = by_name["gain_from_sale_of_investments"]
     assert (assets["dataitemid"], assets["spgi_name"]) == (56, "Gain (Loss) On Sale Of Assets")
     assert (invest["dataitemid"], invest["spgi_name"]) == (62, "Gain (Loss) On Sale Of Invest.")
+
+
+class TestSmartLineItemValidator:
+    """Tests for the _smart_line_item_validator function."""
+
+    def test_valid_line_item(self) -> None:
+        """
+        GIVEN a valid line item
+        WHEN validating it
+        THEN the line item gets returned unchanged
+        """
+        assert _smart_line_item_validator("revenue") == "revenue"
+
+    def test_invalid_line_item_includes_suggestions(self) -> None:
+        """
+        GIVEN an invalid line item similar to a valid one
+        WHEN validating it
+        THEN the error message includes suggestions
+        """
+        with pytest.raises(ValueError, match="Did you mean one of these"):
+            _smart_line_item_validator("revenues")
+
+    def test_overly_long_line_item_is_rejected_without_matching(self) -> None:
+        """
+        GIVEN a line item longer than MAX_LINE_ITEM_LENGTH
+        WHEN validating it
+        THEN it gets rejected before any fuzzy matching runs
+        """
+        with pytest.raises(ValueError, match="at most") as exc_info:
+            _smart_line_item_validator("a" * (MAX_LINE_ITEM_LENGTH + 1))
+
+        assert "Did you mean" not in str(exc_info.value)
+
+    def test_non_string_line_item_is_rejected(self) -> None:
+        """
+        GIVEN a line item that is not a string
+        WHEN validating it
+        THEN it gets rejected
+        """
+        with pytest.raises(ValueError, match="must be a string"):
+            _smart_line_item_validator(["revenue"])  # type: ignore[arg-type]

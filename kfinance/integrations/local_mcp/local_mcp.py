@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import click
 from fastmcp.tools import FunctionTool
@@ -12,6 +12,37 @@ from kfinance.integrations.tool_calling.tool_calling_models import KfinanceTool
 
 logger = get_logger(__name__)
 
+# Patterns that a string has to match to be coercible into an integer or a float.
+INTEGER_STRING_PATTERN = r"^[+-]?\d+$"
+NUMBER_STRING_PATTERN = r"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$"
+
+
+def accept_stringified_numbers(schema: Any) -> Any:
+    """Return a copy of a json schema where integer and number types also accept strings.
+
+    Claude returns integer values as strings if they are part of a field that allows
+    multiple types, e.g. `start_year: int | None`. Pydantic converts those strings to
+    integers, but the low-level mcp sdk validation
+    (github.com/modelcontextprotocol/python-sdk/commit/c8bbfc034d5cb876d6b91185cf02da2af6fb8b44)
+    is stricter and disallows strings where ints are required. Widening the advertised
+    schema keeps that validation enabled while accepting the values models actually send.
+    """
+    if isinstance(schema, list):
+        return [accept_stringified_numbers(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+
+    widened = {key: accept_stringified_numbers(value) for key, value in schema.items()}
+    schema_type = widened.get("type")
+    if schema_type in ("integer", "number"):
+        widened["type"] = [schema_type, "string"]
+        # In json schema, `pattern` only applies to strings and is ignored for numbers.
+        widened.setdefault(
+            "pattern",
+            INTEGER_STRING_PATTERN if schema_type == "integer" else NUMBER_STRING_PATTERN,
+        )
+    return widened
+
 
 def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTool:
     """Build an MCP FunctionTool from a langchain KfinanceTool."""
@@ -21,7 +52,9 @@ def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTo
         description=kfinance_tool.description,
         # MCP expects a JSON schema for tool params, which we
         # can generate similar to how langchain generates openai json schemas.
-        parameters=convert_to_openai_tool(kfinance_tool)["function"]["parameters"],
+        parameters=accept_stringified_numbers(
+            convert_to_openai_tool(kfinance_tool)["function"]["parameters"]
+        ),
         # The langchain runner internally validates input arguments via the args_schema.
         # When running with mcp, we need to reproduce that validation ourselves in
         # arun_without_langchain (which then calls _arun).

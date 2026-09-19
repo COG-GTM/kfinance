@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.1.3
+- Re-enable the low-level mcp sdk input validation for local mcp tool calls. Integer and
+  number fields in the advertised tool schemas now also accept stringified numbers, which
+  is what the validation was turned off for.
+- Reject `line_item` values longer than 128 characters before running line item
+  suggestion matching.
+
 ## v7.1.2
 - Fix swapped `dataitemid`/`spgi_name` for `gain_from_sale_of_assets` and
   `gain_from_sale_of_investments` line item metadata.

@@ -29,6 +29,12 @@ from kfinance.integrations.tool_calling.tool_calling_models import (
 )
 
 
+# The longest valid line item name is well below this bound. Longer inputs are rejected
+# before the fuzzy matching in `_find_similar_line_items`, whose runtime grows with the
+# length of the input.
+MAX_LINE_ITEM_LENGTH = 128
+
+
 def _find_similar_line_items(
     invalid_item: str, descriptors: dict[str, str], max_suggestions: int = 8
 ) -> list[LineItemScore]:
@@ -81,6 +87,12 @@ def _find_similar_line_items(
 
 def _smart_line_item_validator(v: str) -> str:
     """Custom validator that provides intelligent suggestions for invalid line items."""
+    if not isinstance(v, str) or len(v) > MAX_LINE_ITEM_LENGTH:
+        raise ValueError(
+            f"Invalid line_item. line_item must be a string of at most "
+            f"{MAX_LINE_ITEM_LENGTH} characters. Please refer to the tool documentation "
+            f"for valid options."
+        )
     if v not in LINE_ITEM_NAMES_AND_ALIASES:
         # Find similar items using pre-computed descriptors
         suggestions = _find_similar_line_items(v, LINE_ITEM_TO_DESCRIPTIONS_MAP)
