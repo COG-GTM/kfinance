@@ -25,6 +25,8 @@ All configuration is via environment variables (powered by pydantic-settings).
 | `AUTH_OKTA_HOST` | No | `https://kensho.okta.com` | Okta host URL |
 | `AUTH_REFRESH_TOKEN` | Yes* | — | Refresh token for obtaining access tokens (local dev fallback) |
 | `AUTH_REFRESH_URL` | No | `https://kfinance.kensho.com/oauth2/refresh` | Token refresh endpoint |
+| `INBOUND_TOKEN` | Yes | — | Pre-shared token that inbound MCP clients must send as `Authorization: Bearer <token>` |
+| `INBOUND_ALLOWED_ORIGINS` | No | `[]` | JSON list of browser origins allowed to call the proxy cross-origin, e.g. `["https://app.example.com"]`. Empty disables CORS entirely. |
 
 *Either both `AUTH_CLIENT_ID` and `AUTH_PRIVATE_KEY`, or `AUTH_REFRESH_TOKEN` must be set.
 
@@ -52,6 +54,7 @@ export AUTH_PRIVATE_KEY="your-private-key"
 ## Running
 
 ```bash
+export INBOUND_TOKEN="a-long-random-secret"
 python -m kfinance.proxy_mcp --host 127.0.0.1 --port 8000
 ```
 
@@ -63,7 +66,9 @@ Once the server is running, you can test it with the [MCP Inspector](https://mod
 npx @modelcontextprotocol/inspector
 ```
 
-In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport type "Streamable HTTP".
+In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport type "Streamable HTTP" and set the `Authorization` header to `Bearer <INBOUND_TOKEN>`.
+
+The proxy defaults to binding loopback. Any non-loopback bind (e.g. `--host 0.0.0.0` in a container) must sit behind an authenticating gateway in addition to the pre-shared token.
 
 | CLI Option | Default | Description |
 |-----------|---------|-------------|
@@ -72,18 +77,26 @@ In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport t
 
 ## Client Authentication
 
-This skeleton does not authenticate incoming requests from MCP clients. Any client that can reach the proxy can use it. For a production deployment, you would need to add one of the following:
+The proxy injects the operator's backend credential into every forwarded request, so inbound
+callers are authenticated before anything is forwarded. This skeleton requires a pre-shared token:
+set `INBOUND_TOKEN` and have clients send `Authorization: Bearer <INBOUND_TOKEN>`. Requests without
+it get a `401`; only `GET /health` is unauthenticated. The server refuses to start if
+`INBOUND_TOKEN` is unset.
+
+Browser access is closed by default: CORS is only enabled when `INBOUND_ALLOWED_ORIGINS` lists
+explicit origins, and wildcard origins are never used with credentials.
+
+For a production deployment, consider replacing the pre-shared token with one of the following:
 
 - **OAuth 2.0 Proxy** — The proxy runs its own OAuth flow (e.g., via FastMCP's built-in `OAuthProxy`). Clients register, get redirected to an IdP like Okta, and receive scoped tokens. 
 - **JWT Validation** — Clients bring their own IdP-issued tokens. The proxy validates them against the IdP's JWKS endpoint (FastMCP provides `JWTVerifier` for this). Simpler than a full OAuth flow but requires clients to obtain tokens independently.
-- **API Key / Static Token** — The proxy checks for a pre-shared secret in request headers. Simple and appropriate for internal services or controlled partner integrations.
+- **API Key / Static Token** — What this skeleton implements: the proxy checks for a pre-shared secret in request headers. Simple and appropriate for internal services or controlled partner integrations.
 - **Network-Level Trust** — No application-layer auth. The proxy is deployed behind a VPN, service mesh (e.g., Istio with mTLS), or internal load balancer so that only trusted services can reach it.
 
 ## Production Considerations
 
 Beyond client authentication, a production deployment would additionally need:
 
-- CORS configuration tuned to specific origins
 - A more comprehensive health check (the current `GET /health` stub does not verify backend connectivity or token validity)
 - Sentry or equivalent error tracking
 - Redis for shared OAuth client state across replicas (if using OAuth proxy)

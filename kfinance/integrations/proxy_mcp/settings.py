@@ -10,11 +10,19 @@ class AuthSettings(BaseModel):
     refresh_url: str = "https://kfinance.kensho.com/oauth2/refresh"
 
 
+class InboundSettings(BaseModel):
+    """Settings controlling which callers may use the proxy."""
+
+    token: str | None = None
+    allowed_origins: list[str] = []
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_nested_delimiter="_", env_nested_max_split=1)
 
     backend_url: str = "https://kfinance.kensho.com/integrations/mcp"
     auth: AuthSettings = AuthSettings()
+    inbound: InboundSettings = InboundSettings()
 
 
 settings = Settings()
