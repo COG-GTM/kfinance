@@ -25,8 +25,13 @@ All configuration is via environment variables (powered by pydantic-settings).
 | `AUTH_OKTA_HOST` | No | `https://kensho.okta.com` | Okta host URL |
 | `AUTH_REFRESH_TOKEN` | Yes* | — | Refresh token for obtaining access tokens (local dev fallback) |
 | `AUTH_REFRESH_URL` | No | `https://kfinance.kensho.com/oauth2/refresh` | Token refresh endpoint |
+| `CLIENT_TOKENS` | Yes** | — | Comma separated bearer tokens that inbound MCP clients must present |
+| `CLIENT_AUTH_DISABLED` | No | `false` | Set to `true` only when an external gateway authenticates inbound clients |
+| `CLIENT_CORS_ORIGINS` | No | — | Comma separated browser origins allowed to call the proxy cross-origin |
 
 *Either both `AUTH_CLIENT_ID` and `AUTH_PRIVATE_KEY`, or `AUTH_REFRESH_TOKEN` must be set.
+
+**Either `CLIENT_TOKENS` or `CLIENT_AUTH_DISABLED=true` must be set; the server refuses to start otherwise.
 
 ## Authentication Methods
 
@@ -52,6 +57,7 @@ export AUTH_PRIVATE_KEY="your-private-key"
 ## Running
 
 ```bash
+export CLIENT_TOKENS="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python -m kfinance.proxy_mcp --host 127.0.0.1 --port 8000
 ```
 
@@ -63,27 +69,44 @@ Once the server is running, you can test it with the [MCP Inspector](https://mod
 npx @modelcontextprotocol/inspector
 ```
 
-In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport type "Streamable HTTP".
+In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport type "Streamable HTTP" and an `Authorization: Bearer <one of CLIENT_TOKENS>` header.
 
 | CLI Option | Default | Description |
 |-----------|---------|-------------|
 | `--host` | `127.0.0.1` | Host to bind to |
 | `--port` | `8000` | Port to bind to |
 
+The default bind is loopback only. Binding to a non-loopback interface (for example
+`--host 0.0.0.0` in a container) publishes the proxy on the network and must be paired with
+client tokens or a fronting authenticating gateway.
+
 ## Client Authentication
 
-This skeleton does not authenticate incoming requests from MCP clients. Any client that can reach the proxy can use it. For a production deployment, you would need to add one of the following:
+The proxy injects the operator's credential into every forwarded request, so inbound clients
+must authenticate. Requests to `/mcp` are rejected with `401` unless they carry
+`Authorization: Bearer <token>` matching one of the `CLIENT_TOKENS` values (`GET /health`
+is exempt). The server refuses to start when no tokens are configured.
+
+Set `CLIENT_AUTH_DISABLED=true` only when the proxy runs behind a gateway, VPN, or service
+mesh that authenticates callers itself; in that mode any caller that reaches the proxy can
+spend the operator's subscription.
+
+Pre-shared tokens are the simplest option. Richer alternatives for a production deployment:
 
 - **OAuth 2.0 Proxy** — The proxy runs its own OAuth flow (e.g., via FastMCP's built-in `OAuthProxy`). Clients register, get redirected to an IdP like Okta, and receive scoped tokens. 
 - **JWT Validation** — Clients bring their own IdP-issued tokens. The proxy validates them against the IdP's JWKS endpoint (FastMCP provides `JWTVerifier` for this). Simpler than a full OAuth flow but requires clients to obtain tokens independently.
-- **API Key / Static Token** — The proxy checks for a pre-shared secret in request headers. Simple and appropriate for internal services or controlled partner integrations.
 - **Network-Level Trust** — No application-layer auth. The proxy is deployed behind a VPN, service mesh (e.g., Istio with mTLS), or internal load balancer so that only trusted services can reach it.
+
+## CORS
+
+Browsers can only call the proxy from the origins listed in `CLIENT_CORS_ORIGINS`, which is
+empty by default (no cross-origin access). Credentialed cross-origin requests are not
+allowed, so browser clients must send the client token in the `Authorization` header.
 
 ## Production Considerations
 
 Beyond client authentication, a production deployment would additionally need:
 
-- CORS configuration tuned to specific origins
 - A more comprehensive health check (the current `GET /health` stub does not verify backend connectivity or token validity)
 - Sentry or equivalent error tracking
 - Redis for shared OAuth client state across replicas (if using OAuth proxy)
