@@ -17,14 +17,22 @@ _endpoint_tracker_queue: ContextVar[Queue[str] | None] = ContextVar(
 )
 
 
+def _origin(url: str | httpx.URL) -> tuple[bytes, bytes, int | None]:
+    """Return the (scheme, host, port) origin of a url."""
+    parsed = httpx.URL(url)
+    return parsed.raw_scheme, parsed.raw_host, parsed.port
+
+
 class KfinanceBearerAuth(httpx.Auth):
     def __init__(self, api_client: KFinanceApiClient) -> None:
         """"""
         self._api_client = api_client
+        self._api_origin = _origin(api_client.api_host)
 
     def auth_flow(self, request: httpx.Request) -> Generator[Request, Response, None]:
-        """Inject access token into auth header"""
-        request.headers["Authorization"] = f"Bearer {self._api_client.access_token}"
+        """Inject access token into auth header for requests to the kfinance api host."""
+        if _origin(request.url) == self._api_origin:
+            request.headers["Authorization"] = f"Bearer {self._api_client.access_token}"
         yield request
 
 
@@ -34,6 +42,7 @@ class KfinanceHttpxClient(httpx.AsyncClient):
     def __init__(self, api_client: KFinanceApiClient) -> None:
         """"""
         self._kfinance_base_url: str = f"{api_client.api_host}/api/v1"
+        self._kfinance_origin = _origin(api_client.api_host)
 
         super().__init__(auth=KfinanceBearerAuth(api_client=api_client))
 
@@ -75,9 +84,16 @@ class KfinanceHttpxClient(httpx.AsyncClient):
             pass  # Process is shutting down
 
     def _build_url(self, url: str) -> str:
-        """Build the full URL by prepending base_url to relative URLs."""
-        # If URL is already absolute (has scheme), return as-is
+        """Build the full URL by prepending base_url to relative URLs.
+
+        Absolute URLs are only accepted if they point at the kfinance api host,
+        so that requests (and the bearer token) never leave the trusted host.
+        """
         if url.startswith(("http://", "https://")):
+            if _origin(url) != self._kfinance_origin:
+                raise ValueError(
+                    f"Refusing to request {url!r}: absolute urls must point at {self._kfinance_base_url}"
+                )
             return url
         return f"{self._kfinance_base_url}/{url.lstrip('/')}"
 
