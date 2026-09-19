@@ -760,3 +760,17 @@ class TestFetchIssuerRatings:
         assert "21719" in resp.results
         assert "21835" in resp.results
         assert resp.errors == {}
+
+
+class TestRefreshTokenExchange:
+    def test_refresh_token_sent_in_request_body(self, requests_mock: Mocker) -> None:
+        """The refresh token is posted in the body and never appears in the URL."""
+        api_client = KFinanceApiClient(refresh_token="fake_refresh_token")
+        mock = requests_mock.post(
+            url=f"{api_client.api_host}/oauth2/refresh",
+            json={"access_token": "fake_access_token"},
+        )
+
+        assert api_client._get_access_token_via_refresh_token() == "fake_access_token"  # noqa: SLF001
+        assert mock.last_request.text == "refresh_token=fake_refresh_token"
+        assert mock.last_request.query == ""

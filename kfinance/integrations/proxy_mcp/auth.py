@@ -107,7 +107,7 @@ class ClientAccessTokenDispenser(ABC):
 
 
 class RefreshTokenDispenser(ClientAccessTokenDispenser):
-    """Exchanges a refresh token via GET {url}?refresh_token={token} -> {"access_token": "..."}."""
+    """Exchanges a refresh token via POST {url} -> {"access_token": "..."}."""
 
     def __init__(
         self,
@@ -123,9 +123,18 @@ class RefreshTokenDispenser(ClientAccessTokenDispenser):
         self._http_client = httpx.Client(timeout=60)
 
     def refresh_access_token(self) -> ClientAccessToken:
-        """Exchange the refresh token for a new access token via HTTP GET."""
-        response = self._http_client.get(
-            f"{self._refresh_url}?refresh_token={self._refresh_token}",
+        """Exchange the refresh token for a new access token via HTTP POST.
+
+        The refresh token is sent in the request body so that it never appears
+        in a URL, which intermediaries and servers routinely write to logs.
+        """
+        response = self._http_client.post(
+            self._refresh_url,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            data={"refresh_token": self._refresh_token},
         )
         response.raise_for_status()
         token = response.json()["access_token"]
