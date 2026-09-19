@@ -106,6 +106,8 @@ def create_app() -> FastAPI:
     mcp_http_app = proxy.http_app(path="/mcp", transport="streamable-http")
 
     app = FastAPI(lifespan=mcp_http_app.lifespan)
+    # Added first so that CORSMiddleware, added last, wraps it and annotates 401 responses.
+    app.add_middleware(InboundBearerTokenMiddleware, token=settings.inbound.token)
     if settings.inbound.allowed_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -115,12 +117,12 @@ def create_app() -> FastAPI:
             allow_headers=[
                 "Authorization",
                 "Content-Type",
+                "Last-Event-ID",
                 "Mcp-Session-Id",
                 "Mcp-Protocol-Version",
             ],
             expose_headers=["Mcp-Session-Id"],
         )
-    app.add_middleware(InboundBearerTokenMiddleware, token=settings.inbound.token)
 
     @app.get("/health")
     async def health() -> dict:

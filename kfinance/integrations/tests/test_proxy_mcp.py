@@ -47,8 +47,52 @@ class TestInboundBearerTokenMiddleware:
         assert response.status_code == 200
 
 
+ALLOWED_ORIGIN = "https://app.example.com"
+
+
+@pytest.fixture
+def configured_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    monkeypatch.setattr(settings.inbound, "token", "expected-token")
+    monkeypatch.setattr(settings.inbound, "allowed_origins", [ALLOWED_ORIGIN])
+    monkeypatch.setattr(settings.auth, "refresh_token", "fake-refresh-token")
+    return create_app()
+
+
 class TestCreateApp:
     def test_create_app_requires_an_inbound_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(settings.inbound, "token", None)
         with pytest.raises(ValueError, match="INBOUND_TOKEN"):
             create_app()
+
+    def test_unauthenticated_request_is_rejected_with_cors_headers(
+        self, configured_app: FastAPI
+    ) -> None:
+        # CORS wraps the auth middleware so an allowed browser can read the 401 instead of
+        # seeing an opaque network error.
+        with TestClient(configured_app) as client:
+            response = client.post("/mcp", headers={"Origin": ALLOWED_ORIGIN})
+        assert response.status_code == 401
+        assert response.headers["access-control-allow-origin"] == ALLOWED_ORIGIN
+
+    def test_disallowed_origin_gets_no_cors_headers(self, configured_app: FastAPI) -> None:
+        with TestClient(configured_app) as client:
+            response = client.post("/mcp", headers={"Origin": "https://evil.example.com"})
+        assert response.status_code == 401
+        assert "access-control-allow-origin" not in response.headers
+
+    @pytest.mark.parametrize("header", ["authorization", "mcp-session-id", "last-event-id"])
+    def test_preflight_allows_mcp_headers_from_allowed_origin(
+        self, configured_app: FastAPI, header: str
+    ) -> None:
+        with TestClient(configured_app) as client:
+            response = client.options(
+                "/mcp",
+                headers={
+                    "Origin": ALLOWED_ORIGIN,
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": header,
+                },
+            )
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == ALLOWED_ORIGIN
+        assert header in response.headers["access-control-allow-headers"].lower()
