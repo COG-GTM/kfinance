@@ -39,9 +39,9 @@ This function initializes and starts an MCP server that exposes the kFinance too
 
 The server's full signature is as follows:
 
-`kfinance.mcp [--stdio|-s|--sse|--streamable-http] --refresh-token <refresh-token> --client-id <client-id> --private-key <private-key>`
+`kfinance.mcp [--stdio|-s|--sse|--streamable-http] [--host <host>] [--port <port>] --refresh-token <refresh-token> --client-id <client-id> --private-key <private-key>`
 
-Authentication Methods (in order of precedence):
+Upstream Authentication Methods (in order of precedence):
 
 1. Refresh Token: Uses an existing refresh token for authentication. The `--refresh-token <refresh-token>` argument must be provided.
 2. Key Pair: Uses client ID and private key for authentication. Both the `--client-id <client-id>` and `--private-key <private-key>` arguments must be provided.
@@ -49,20 +49,33 @@ Authentication Methods (in order of precedence):
 
 Transport Layers:
 
-- `--stdio` / `-s`: Standard input/output transport (use with MCP Inspector)
-- `--sse`: Server-Sent Events transport (default)
+- `--stdio` / `-s`: Standard input/output transport (default, use with MCP Inspector)
+- `--sse`: Server-Sent Events transport
 - `--streamable-http`: HTTP transport
+
+Inbound Client Authentication:
+
+The server calls the kFinance API with your credential, so every tool call a client makes runs with
+your entitlements. The network transports (`--sse` and `--streamable-http`) therefore require
+inbound clients to send `Authorization: Bearer <token>`, where `<token>` is read from the
+`KFINANCE_MCP_AUTH_TOKEN` environment variable. If that variable is unset, the server generates a
+random token and logs it at startup. Requests whose `Host`, `Origin` or `Referer` header points at
+a host other than loopback or `--host` are rejected, which blocks DNS-rebinding and cross-origin
+browser attacks.
+
+Network transports bind to `127.0.0.1:8000` by default. Only change `--host` if the server needs to
+be reachable from other machines, and keep it behind a network boundary you control.
 
 Examples:
 ```bash
-# Using stdio with MCP Inspector
+# Using stdio with MCP Inspector (default)
 npx @modelcontextprotocol/inspector python -m kfinance.mcp --stdio --refresh-token <token>
 
-# Using SSE (default)
-python -m kfinance.mcp --refresh-token <token>
+# Using SSE
+KFINANCE_MCP_AUTH_TOKEN=<inbound-token> python -m kfinance.mcp --sse --refresh-token <token>
 
 # Using streamable-http
-python -m kfinance.mcp --streamable-http --refresh-token <token>
+KFINANCE_MCP_AUTH_TOKEN=<inbound-token> python -m kfinance.mcp --streamable-http --refresh-token <token>
 ```
 
 ## MCP Proxy
