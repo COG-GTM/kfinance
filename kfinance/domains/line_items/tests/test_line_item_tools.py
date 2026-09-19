@@ -1,5 +1,6 @@
 import httpx
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from pydantic import ValidationError
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -9,7 +10,9 @@ from kfinance.conftest import FAKE_COMPANY_1_ID_TRIPLE, FAKE_COMPANY_2_ID_TRIPLE
 from kfinance.domains.companies.company_models import COMPANY_ID_PREFIX
 from kfinance.domains.line_items.line_item_models import CalendarType, LineItemResp, LineItemScore
 from kfinance.domains.line_items.line_item_tools import (
+    MAX_LINE_ITEM_LENGTH,
     GetFinancialLineItemFromIdentifiers,
+    GetFinancialLineItemFromIdentifiersArgs,
     GetFinancialLineItemFromIdentifiersResp,
     _find_similar_line_items,
     fetch_line_item_from_company_ids,
@@ -342,6 +345,17 @@ class TestFindSimilarLineItems:
         for item in results:
             assert item.score > 0.1
 
+    def test_oversized_input_skips_matching(self) -> None:
+        """
+        GIVEN a preset descriptors dictionary
+        WHEN searching with an input longer than MAX_LINE_ITEM_LENGTH
+        THEN no suggestions are computed
+        """
+        results = _find_similar_line_items(
+            "revenue" * MAX_LINE_ITEM_LENGTH, self.TEST_DESCRIPTORS, max_suggestions=5
+        )
+        assert results == []
+
     def test_lineitemscore_structure(self) -> None:
         """
         GIVEN a preset descriptors dictionary
@@ -358,6 +372,35 @@ class TestFindSimilarLineItems:
             assert isinstance(item.score, float)
             assert item.name in self.TEST_DESCRIPTORS
             assert item.description == self.TEST_DESCRIPTORS[item.name]
+
+
+class TestLineItemArgsValidation:
+    @pytest.mark.parametrize(
+        "line_item", ["a" * (MAX_LINE_ITEM_LENGTH + 1), 123, ["revenue"], None]
+    )
+    def test_invalid_line_item_rejected_without_suggestions(self, line_item: object) -> None:
+        """
+        GIVEN an oversized or non-string line_item
+        WHEN validating the tool args
+        THEN validation fails without running suggestion matching
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            GetFinancialLineItemFromIdentifiersArgs.model_validate(
+                {"identifiers": ["SPGI"], "line_item": line_item}
+            )
+        assert "Did you mean" not in str(exc_info.value)
+
+    def test_invalid_line_item_still_suggests(self) -> None:
+        """
+        GIVEN a short invalid line_item
+        WHEN validating the tool args
+        THEN validation fails with suggestions
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            GetFinancialLineItemFromIdentifiersArgs.model_validate(
+                {"identifiers": ["SPGI"], "line_item": "revenues"}
+            )
+        assert "Did you mean" in str(exc_info.value)
 
 
 def test_sale_line_item_dataitemids_not_swapped() -> None:
