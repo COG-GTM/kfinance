@@ -1,5 +1,15 @@
 # Changelog
 
+## v8.0.0
+- Require inbound clients of the local MCP server to send a bearer token
+  (`KFINANCE_MCP_AUTH_TOKEN`, or a token generated and logged at startup) and reject requests
+  whose `Host`, `Origin` or `Referer` header points outside loopback or `--host`.
+- Bind the local MCP server's network transports to `127.0.0.1:8000`, configurable via
+  `--host` and `--port`.
+- Breaking changes:
+  - The local MCP server now defaults to the `stdio` transport. Pass `--sse` explicitly to keep
+    the previous behavior.
+
 ## v7.1.2
 - Fix swapped `dataitemid`/`spgi_name` for `gain_from_sale_of_assets` and
   `gain_from_sale_of_investments` line item metadata.
