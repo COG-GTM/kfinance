@@ -1,5 +1,6 @@
 import abc
 import json
+import logging
 from typing import Annotated, Any, Callable, Coroutine, Dict, Generic, Literal, Type, TypeVar
 
 from asyncer import syncify
@@ -21,9 +22,33 @@ from kfinance.domains.companies.company_models import IdentificationTripleWithCo
 from kfinance.httpx_utils import KfinanceHttpxClient
 
 
+logger = logging.getLogger(__name__)
+
+# Status codes whose meaning is useful to the caller and carries no backend detail.
+_CALLER_SAFE_STATUS_MESSAGES = {
+    400: "The request was invalid. Check the tool arguments and try again.",
+    401: "The request was not authenticated.",
+    403: "The request is not permitted with the current permissions.",
+    404: "No data was found for the requested parameters.",
+    429: "The request was rate limited. Try again later.",
+}
+
+
 def _sanitize_http_error(e: HTTPStatusError) -> str:
-    """Return the response body from an HTTPStatusError."""
-    return f"{e.response.status_code}: {e.response.text}"
+    """Return a caller-safe message for an HTTPStatusError.
+
+    The raw upstream response body can contain backend internals (stack traces,
+    hostnames, query detail), so it is logged instead of returned.
+    """
+    status_code = e.response.status_code
+    logger.warning(
+        "Upstream request to %s failed with status %s: %s",
+        e.request.url,
+        status_code,
+        e.response.text,
+    )
+    generic_message = f"Upstream request failed with status {status_code}."
+    return _CALLER_SAFE_STATUS_MESSAGES.get(status_code, generic_message)
 
 
 class KfinanceTool(BaseTool):
