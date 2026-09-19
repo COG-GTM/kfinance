@@ -39,13 +39,25 @@ This function initializes and starts an MCP server that exposes the kFinance too
 
 The server's full signature is as follows:
 
-`kfinance.mcp [--stdio|-s|--sse|--streamable-http] --refresh-token <refresh-token> --client-id <client-id> --private-key <private-key>`
+`kfinance.mcp [--stdio|-s|--sse|--streamable-http] [--refresh-token-file <path>] [--private-key-file <path>]`
+
+Credentials are read from environment variables or from files. They are never accepted as command line values, because process arguments are readable by other users on the host (`ps`, `/proc/<pid>/cmdline`) and are persisted in shell history.
+
+| Variable | Description |
+|----------|-------------|
+| `KFINANCE_REFRESH_TOKEN` | OAuth refresh token |
+| `KFINANCE_CLIENT_ID` | Client ID for key-pair authentication |
+| `KFINANCE_PRIVATE_KEY` | Private key for key-pair authentication |
+| `KFINANCE_REFRESH_TOKEN_FILE` | Path to a file holding the refresh token (same as `--refresh-token-file`) |
+| `KFINANCE_PRIVATE_KEY_FILE` | Path to a file holding the private key (same as `--private-key-file`) |
+
+When both are set for a credential, the file takes precedence over the environment variable.
 
 Authentication Methods (in order of precedence):
 
-1. Refresh Token: Uses an existing refresh token for authentication. The `--refresh-token <refresh-token>` argument must be provided.
-2. Key Pair: Uses client ID and private key for authentication. Both the `--client-id <client-id>` and `--private-key <private-key>` arguments must be provided.
-3. Browser: Falls back to browser-based authentication flow. This occurs if no auth arguments are provided.
+1. Refresh Token: Uses an existing refresh token for authentication. `KFINANCE_REFRESH_TOKEN` or `--refresh-token-file` must be provided.
+2. Key Pair: Uses client ID and private key for authentication. `KFINANCE_CLIENT_ID` and either `KFINANCE_PRIVATE_KEY` or `--private-key-file` must be provided.
+3. Browser: Falls back to browser-based authentication flow. This occurs if no credentials are provided.
 
 Transport Layers:
 
@@ -56,13 +68,15 @@ Transport Layers:
 Examples:
 ```bash
 # Using stdio with MCP Inspector
-npx @modelcontextprotocol/inspector python -m kfinance.mcp --stdio --refresh-token <token>
+export KFINANCE_REFRESH_TOKEN="your-refresh-token"
+npx @modelcontextprotocol/inspector python -m kfinance.mcp --stdio
 
 # Using SSE (default)
-python -m kfinance.mcp --refresh-token <token>
+python -m kfinance.mcp
 
-# Using streamable-http
-python -m kfinance.mcp --streamable-http --refresh-token <token>
+# Using streamable-http, with the private key read from a file
+export KFINANCE_CLIENT_ID="your-client-id"
+python -m kfinance.mcp --streamable-http --private-key-file ~/.kfinance/private_key.pem
 ```
 
 ## MCP Proxy

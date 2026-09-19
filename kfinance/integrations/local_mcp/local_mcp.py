@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from typing import Literal, Optional
 
 import click
@@ -35,6 +37,21 @@ def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTo
     )
 
 
+def _read_credential(env_var: str, credential_file: Optional[Path]) -> Optional[str]:
+    """Resolve a credential from an environment variable or a file, preferring the file.
+
+    :param env_var: Name of the environment variable holding the credential.
+    :type env_var: str
+    :param credential_file: Optional path to a file holding the credential.
+    :type credential_file: Optional[Path]
+    :return: The credential, or None if neither source provides one.
+    :rtype: Optional[str]
+    """
+    if credential_file is not None:
+        return credential_file.read_text().strip()
+    return os.environ.get(env_var)
+
+
 @click.command()
 @click.option("--stdio", "-s", "transport", flag_value="stdio", help="Use stdio transport")
 @click.option(
@@ -46,20 +63,36 @@ def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTo
     flag_value="streamable-http",
     help="Use streamable HTTP transport",
 )
-@click.option("--refresh-token", required=False)
-@click.option("--client-id", required=False)
-@click.option("--private-key", required=False)
+@click.option(
+    "--refresh-token-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    envvar="KFINANCE_REFRESH_TOKEN_FILE",
+    required=False,
+    help="Path to a file containing the OAuth refresh token.",
+)
+@click.option(
+    "--private-key-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    envvar="KFINANCE_PRIVATE_KEY_FILE",
+    required=False,
+    help="Path to a file containing the private key for key-pair authentication.",
+)
 def run_mcp(
     transport: Literal["stdio", "sse", "streamable-http"],
-    refresh_token: Optional[str] = None,
-    client_id: Optional[str] = None,
-    private_key: Optional[str] = None,
+    refresh_token_file: Optional[Path] = None,
+    private_key_file: Optional[Path] = None,
 ) -> None:
     """Run the Kfinance MCP server with specified configuration.
 
     This function initializes and starts an MCP server that exposes Kfinance
     tools. The server supports multiple authentication methods and
     transport protocols to accommodate different deployment scenarios.
+
+    Credentials are never read from command line arguments because process
+    arguments are visible to other users on the host and are persisted in
+    shell history. They are read from environment variables
+    (KFINANCE_REFRESH_TOKEN, KFINANCE_CLIENT_ID, KFINANCE_PRIVATE_KEY) or
+    from files referenced by --refresh-token-file / --private-key-file.
 
     Authentication Methods (in order of precedence):
     1. Refresh Token: Uses an existing refresh token for authentication
@@ -68,14 +101,15 @@ def run_mcp(
 
     :param transport: Transport protocol (stdio, sse, or streamable-http).
     :type transport: Literal["stdio", "sse", "streamable-http"]
-    :param refresh_token: OAuth refresh token for authentication
-    :type refresh_token: str
-    :param client_id: Client id for key-pair authentication
-    :type client_id: str
-    :param private_key: Private key for key-pair authentication.
-    :type private_key: str
+    :param refresh_token_file: Path to a file holding the OAuth refresh token
+    :type refresh_token_file: Optional[Path]
+    :param private_key_file: Path to a file holding the private key
+    :type private_key_file: Optional[Path]
     """
     logger.info("Server will run with %s transport", transport)
+    refresh_token = _read_credential("KFINANCE_REFRESH_TOKEN", refresh_token_file)
+    private_key = _read_credential("KFINANCE_PRIVATE_KEY", private_key_file)
+    client_id = os.environ.get("KFINANCE_CLIENT_ID")
     if refresh_token:
         logger.info("The client will be authenticated using a refresh token")
         kfinance_client = Client(refresh_token=refresh_token)
