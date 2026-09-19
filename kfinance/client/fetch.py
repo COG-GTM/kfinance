@@ -181,9 +181,18 @@ class KFinanceApiClient:
         return self._access_token
 
     def _get_access_token_via_refresh_token(self) -> str:
-        """Get an access token via oauth by submitting a refresh token."""
-        response = requests.get(
-            f"{self.api_host}/oauth2/refresh?refresh_token={self.refresh_token}",
+        """Get an access token via oauth by submitting a refresh token.
+
+        The refresh token is sent in the request body so that it never appears
+        in a URL, which intermediaries and servers routinely write to logs.
+        """
+        response = requests.post(
+            f"{self.api_host}/oauth2/refresh",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            data={"refresh_token": self.refresh_token},
             timeout=60,
         )
         response.raise_for_status()
