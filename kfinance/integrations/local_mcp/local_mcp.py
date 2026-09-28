@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from typing import Literal, Optional
 
 import click
@@ -11,6 +13,26 @@ from kfinance.integrations.tool_calling.tool_calling_models import KfinanceTool
 
 
 logger = get_logger(__name__)
+
+REFRESH_TOKEN_ENV_VAR = "KFINANCE_REFRESH_TOKEN"
+CLIENT_ID_ENV_VAR = "KFINANCE_CLIENT_ID"
+PRIVATE_KEY_ENV_VAR = "KFINANCE_PRIVATE_KEY"
+
+SECRET_FILE_TYPE = click.Path(exists=True, dir_okay=False, readable=True, path_type=Path)
+
+
+def resolve_secret(secret_file: Optional[Path], env_var: str) -> Optional[str]:
+    """Resolve a secret from a file path, falling back to an environment variable.
+
+    Secrets are never accepted as raw CLI values so that they do not leak via
+    the process list (argv) or shell history.
+    """
+    if secret_file is not None:
+        secret = secret_file.read_text().strip()
+        if not secret:
+            raise click.BadParameter(f"{secret_file} is empty.")
+        return secret
+    return os.environ.get(env_var) or None
 
 
 def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTool:
@@ -46,14 +68,27 @@ def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTo
     flag_value="streamable-http",
     help="Use streamable HTTP transport",
 )
-@click.option("--refresh-token", required=False)
-@click.option("--client-id", required=False)
-@click.option("--private-key", required=False)
+@click.option(
+    "--refresh-token-file",
+    type=SECRET_FILE_TYPE,
+    help=f"Path to a file containing the refresh token. Defaults to the {REFRESH_TOKEN_ENV_VAR} env var.",
+)
+@click.option(
+    "--client-id",
+    envvar=CLIENT_ID_ENV_VAR,
+    show_envvar=True,
+    help="Client id for key-pair authentication.",
+)
+@click.option(
+    "--private-key-file",
+    type=SECRET_FILE_TYPE,
+    help=f"Path to a file containing the private key. Defaults to the {PRIVATE_KEY_ENV_VAR} env var.",
+)
 def run_mcp(
     transport: Literal["stdio", "sse", "streamable-http"],
-    refresh_token: Optional[str] = None,
+    refresh_token_file: Optional[Path] = None,
     client_id: Optional[str] = None,
-    private_key: Optional[str] = None,
+    private_key_file: Optional[Path] = None,
 ) -> None:
     """Run the Kfinance MCP server with specified configuration.
 
@@ -66,15 +101,22 @@ def run_mcp(
     2. Key Pair: Uses client ID and private key for authentication
     3. Browser: Falls back to browser-based authentication flow
 
+    Secrets are read from files or environment variables (KFINANCE_REFRESH_TOKEN,
+    KFINANCE_PRIVATE_KEY) rather than raw CLI values, so they never appear in the
+    process list or shell history.
+
     :param transport: Transport protocol (stdio, sse, or streamable-http).
     :type transport: Literal["stdio", "sse", "streamable-http"]
-    :param refresh_token: OAuth refresh token for authentication
-    :type refresh_token: str
+    :param refresh_token_file: Path to a file containing an OAuth refresh token
+    :type refresh_token_file: Path
     :param client_id: Client id for key-pair authentication
     :type client_id: str
-    :param private_key: Private key for key-pair authentication.
-    :type private_key: str
+    :param private_key_file: Path to a file containing the private key for key-pair authentication.
+    :type private_key_file: Path
     """
+    refresh_token = resolve_secret(refresh_token_file, REFRESH_TOKEN_ENV_VAR)
+    private_key = resolve_secret(private_key_file, PRIVATE_KEY_ENV_VAR)
+
     logger.info("Server will run with %s transport", transport)
     if refresh_token:
         logger.info("The client will be authenticated using a refresh token")

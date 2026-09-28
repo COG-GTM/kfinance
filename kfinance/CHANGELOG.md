@@ -1,5 +1,14 @@
 # Changelog
 
+## v8.0.0
+- Breaking changes:
+  - The local MCP server (`python -m kfinance.mcp`) no longer accepts credentials as raw
+    CLI values, since those leak via the process list and shell history. The
+    `--refresh-token` and `--private-key` options have been replaced by the
+    `KFINANCE_REFRESH_TOKEN` / `KFINANCE_PRIVATE_KEY` env vars or the
+    `--refresh-token-file` / `--private-key-file` options. `--client-id` can also be set
+    via `KFINANCE_CLIENT_ID`.
+
 ## v7.1.2
 - Fix swapped `dataitemid`/`spgi_name` for `gain_from_sale_of_assets` and
   `gain_from_sale_of_investments` line item metadata.
