@@ -175,3 +175,39 @@ class TestRunMcpPrivateKeyValidation:
         assert result.exit_code == 2
         assert "is empty" in result.stderr
         client.assert_not_called()
+
+    def test_unreadable_private_key_file(self, runner: CliRunner, tmp_path: Path) -> None:
+        """
+        GIVEN a private key file path that does not exist
+        WHEN run_mcp needs key-pair auth
+        THEN it exits with a parameter error
+        """
+        with patch.object(local_mcp, "Client") as client:
+            result = runner.invoke(
+                run_mcp,
+                ["--stdio", "--private-key-file", str(tmp_path / "missing.pem")],
+                env={local_mcp.CLIENT_ID_ENV_VAR: "cid"},
+            )
+        assert result.exit_code == 2
+        assert "cannot read" in result.stderr
+        client.assert_not_called()
+
+    def test_refresh_token_ignores_unused_key_settings(
+        self, runner: CliRunner, mock_client: MagicMock, tmp_path: Path
+    ) -> None:
+        """
+        GIVEN a refresh token plus conflicting / missing private key settings
+        WHEN run_mcp starts
+        THEN the higher-priority refresh token is used and the key settings are not validated
+        """
+        result = runner.invoke(
+            run_mcp,
+            ["--stdio"],
+            env={
+                local_mcp.REFRESH_TOKEN_ENV_VAR: "env-token",
+                local_mcp.PRIVATE_KEY_ENV_VAR: "old-key",
+                local_mcp.PRIVATE_KEY_FILE_ENV_VAR: str(tmp_path / "missing.pem"),
+            },
+        )
+        assert result.exit_code == 0, result.output
+        mock_client.assert_called_once_with(refresh_token="env-token")

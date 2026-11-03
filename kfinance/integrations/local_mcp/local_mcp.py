@@ -51,7 +51,12 @@ def resolve_private_key(
             f"Provide the private key either via {PRIVATE_KEY_ENV_VAR} or via "
             f"--private-key-file/{PRIVATE_KEY_FILE_ENV_VAR}, not both."
         )
-    key = private_key_file.read_text().strip()
+    try:
+        key = private_key_file.read_text().strip()
+    except OSError as e:
+        raise click.BadParameter(
+            f"cannot read {private_key_file}: {e.strerror}", param_hint="--private-key-file"
+        ) from e
     if not key:
         raise click.BadParameter(f"{private_key_file} is empty.", param_hint="--private-key-file")
     return key
@@ -119,7 +124,8 @@ def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTo
     envvar=PRIVATE_KEY_FILE_ENV_VAR,
     show_envvar=True,
     required=False,
-    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path),
+    # Not validated eagerly: the file is only read when key-pair auth is actually selected.
+    type=click.Path(path_type=Path),
     help="Path to a file containing the private key for key-pair authentication.",
 )
 @click.pass_context
@@ -168,9 +174,9 @@ def run_mcp(
         PRIVATE_KEY_ENV_VAR,
         alternative=" or pass --private-key-file <path>",
     )
-    private_key = resolve_private_key(private_key, private_key_file)
-
     logger.info("Server will run with %s transport", transport)
+    if not refresh_token:
+        private_key = resolve_private_key(private_key, private_key_file)
     if refresh_token:
         logger.info("The client will be authenticated using a refresh token")
         kfinance_client = Client(refresh_token=refresh_token)
