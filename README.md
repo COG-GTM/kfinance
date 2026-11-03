@@ -39,7 +39,7 @@ This function initializes and starts an MCP server that exposes the kFinance too
 
 The server's full signature is as follows:
 
-`kfinance.mcp [--stdio|-s|--sse|--streamable-http] --refresh-token <refresh-token> --client-id <client-id> --private-key <private-key>`
+`kfinance.mcp [--stdio|-s|--sse|--streamable-http] [--host <host>] [--port <port>] --refresh-token <refresh-token> --client-id <client-id> --private-key <private-key>`
 
 Authentication Methods (in order of precedence):
 
@@ -49,20 +49,27 @@ Authentication Methods (in order of precedence):
 
 Transport Layers:
 
-- `--stdio` / `-s`: Standard input/output transport (use with MCP Inspector)
-- `--sse`: Server-Sent Events transport (default)
+- `--stdio` / `-s`: Standard input/output transport (default). Opens no network port.
+- `--sse`: Server-Sent Events transport
 - `--streamable-http`: HTTP transport
+
+Every tool call runs with your kFinance credentials, so the network transports (`--sse` and `--streamable-http`) require client authentication:
+
+- Set `KFINANCE_MCP_AUTH_TOKEN` to a secret of at least 32 characters, e.g. `export KFINANCE_MCP_AUTH_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")`. The server refuses to start without it.
+- MCP clients must send `Authorization: Bearer <token>` on every request; other requests get `401`.
+- Requests whose `Host` or `Origin` header is not `localhost`, `127.0.0.1`, `::1` or the `--host` address get `403`, which blocks DNS-rebinding and cross-site browser requests.
+- The server binds to `--host 127.0.0.1 --port 8000` by default.
 
 Examples:
 ```bash
-# Using stdio with MCP Inspector
-npx @modelcontextprotocol/inspector python -m kfinance.mcp --stdio --refresh-token <token>
+# Using stdio (default), e.g. with MCP Inspector
+npx @modelcontextprotocol/inspector python -m kfinance.mcp --refresh-token <token>
 
-# Using SSE (default)
-python -m kfinance.mcp --refresh-token <token>
+# Using SSE
+KFINANCE_MCP_AUTH_TOKEN=<client-token> python -m kfinance.mcp --sse --refresh-token <token>
 
 # Using streamable-http
-python -m kfinance.mcp --streamable-http --refresh-token <token>
+KFINANCE_MCP_AUTH_TOKEN=<client-token> python -m kfinance.mcp --streamable-http --refresh-token <token>
 ```
 
 ## MCP Proxy
@@ -77,7 +84,7 @@ AUTH_REFRESH_TOKEN=<token> python -m kfinance.proxy_mcp
 AUTH_CLIENT_ID=<client-id> AUTH_PRIVATE_KEY=<private-key> python -m kfinance.proxy_mcp
 ```
 
-The server starts on `http://127.0.0.1:8000/mcp` by default. Use `--host` and `--port` to configure binding.
+The server starts on `http://127.0.0.1:8000/mcp` by default. Use `--host` and `--port` to configure binding. The server speaks plain HTTP, so the bearer token is unencrypted on the wire; if you bind to a non-loopback address, put the server behind a TLS-terminating reverse proxy.
 
 For full documentation including configuration options, authentication methods, and production considerations, see [kfinance/integrations/proxy_mcp/README.md](kfinance/integrations/proxy_mcp/README.md).
 
