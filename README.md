@@ -84,7 +84,7 @@ AUTH_REFRESH_TOKEN=<token> python -m kfinance.proxy_mcp
 AUTH_CLIENT_ID=<client-id> AUTH_PRIVATE_KEY=<private-key> python -m kfinance.proxy_mcp
 ```
 
-The server starts on `http://127.0.0.1:8000/mcp` by default. Use `--host` and `--port` to configure binding.
+The server starts on `http://127.0.0.1:8000/mcp` by default. Use `--host` and `--port` to configure binding. The server speaks plain HTTP, so the bearer token is unencrypted on the wire; if you bind to a non-loopback address, put the server behind a TLS-terminating reverse proxy.
 
 For full documentation including configuration options, authentication methods, and production considerations, see [kfinance/integrations/proxy_mcp/README.md](kfinance/integrations/proxy_mcp/README.md).
 

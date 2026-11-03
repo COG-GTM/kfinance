@@ -12,6 +12,7 @@ from kfinance.integrations.local_mcp.http_auth import (
     AUTH_TOKEN_ENV_VAR,
     DEFAULT_HOST,
     DEFAULT_PORT,
+    LOOPBACK_HOSTS,
     MIN_AUTH_TOKEN_LENGTH,
     BearerAuthMiddleware,
     allowed_hosts_for,
@@ -78,6 +79,12 @@ def serve_over_http(
         auth_token=auth_token,
         allowed_hosts=allowed_hosts_for(host),
     )
+    if host.strip().strip("[]").lower() not in LOOPBACK_HOSTS:
+        logger.warning(
+            "Binding to non-loopback address %s over plain HTTP: the bearer token is sent "
+            "unencrypted. Only expose this port behind a TLS-terminating reverse proxy.",
+            host,
+        )
     logger.info("Server starting on %s:%s with bearer token authentication", host, port)
     uvicorn.run(app, host=host, port=port)
 
