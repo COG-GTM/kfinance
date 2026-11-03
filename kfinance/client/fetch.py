@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import jwt
 import requests
+from requests.structures import CaseInsensitiveDict
 
 from kfinance.client.industry_models import IndustryClassification
 from kfinance.client.log_redaction import install_refresh_token_log_filter, redact_refresh_token
@@ -197,9 +198,11 @@ class KFinanceApiClient:
             if original_request is None and exc.response is not None:
                 original_request = exc.response.request
             request = None
-            if isinstance(original_request, requests.PreparedRequest):
-                request = original_request.copy()
-                request.url = redact_refresh_token(request.url or "")
+            if original_request is not None:
+                request = requests.PreparedRequest()
+                request.method = original_request.method
+                request.url = redact_refresh_token(original_request.url or "")
+                request.headers = CaseInsensitiveDict(original_request.headers)
             redacted_response = None
             if exc.response is not None:
                 redacted_response = copy(exc.response)
