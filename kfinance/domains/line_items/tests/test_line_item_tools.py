@@ -1,15 +1,25 @@
+import time
+
 import httpx
 from langchain_core.utils.function_calling import convert_to_openai_tool
 import pytest
+from pydantic import ValidationError
 from pytest_httpx import HTTPXMock
 
 from kfinance.client.kfinance import Client
 from kfinance.client.models.response_models import PostResponse
 from kfinance.conftest import FAKE_COMPANY_1_ID_TRIPLE, FAKE_COMPANY_2_ID_TRIPLE, SPGI_ID_TRIPLE
 from kfinance.domains.companies.company_models import COMPANY_ID_PREFIX
-from kfinance.domains.line_items.line_item_models import CalendarType, LineItemResp, LineItemScore
+from kfinance.domains.line_items.line_item_models import (
+    LINE_ITEM_NAMES_AND_ALIASES,
+    CalendarType,
+    LineItemResp,
+    LineItemScore,
+)
 from kfinance.domains.line_items.line_item_tools import (
+    MAX_LINE_ITEM_LENGTH,
     GetFinancialLineItemFromIdentifiers,
+    GetFinancialLineItemFromIdentifiersArgs,
     GetFinancialLineItemFromIdentifiersResp,
     _find_similar_line_items,
     fetch_line_item_from_company_ids,
@@ -358,6 +368,101 @@ class TestFindSimilarLineItems:
             assert isinstance(item.score, float)
             assert item.name in self.TEST_DESCRIPTORS
             assert item.description == self.TEST_DESCRIPTORS[item.name]
+
+
+class TestLineItemLengthBound:
+    """Oversized line_item values must be rejected before fuzzy matching runs."""
+
+    OVERSIZED_LINE_ITEM = "a" * 500_000
+
+    def test_all_known_line_items_fit_within_limit(self) -> None:
+        """
+        GIVEN the list of known line item names and aliases
+        WHEN comparing their lengths with MAX_LINE_ITEM_LENGTH
+        THEN every valid name fits, so the bound never rejects a valid value
+        """
+        assert max(len(name) for name in LINE_ITEM_NAMES_AND_ALIASES) <= MAX_LINE_ITEM_LENGTH
+
+    def test_oversized_line_item_rejected_quickly(self) -> None:
+        """
+        GIVEN a line_item of several hundred thousand characters
+        WHEN validating the tool args
+        THEN a length error is raised immediately without fuzzy matching or echoing the input
+        """
+        start = time.perf_counter()
+        with pytest.raises(ValidationError) as exc_info:
+            GetFinancialLineItemFromIdentifiersArgs.model_validate(
+                {"identifiers": ["SPGI"], "line_item": self.OVERSIZED_LINE_ITEM}
+            )
+        elapsed = time.perf_counter() - start
+
+        assert elapsed < 1
+        message = str(exc_info.value)
+        assert f"at most {MAX_LINE_ITEM_LENGTH} characters" in message
+        assert "Did you mean" not in message
+        assert len(message) < 2_000
+
+    @pytest.mark.asyncio
+    async def test_oversized_line_item_rejected_by_tool_before_request(
+        self, mock_client: Client
+    ) -> None:
+        """
+        GIVEN the line item tool as invoked by the MCP server
+        WHEN it receives an oversized line_item
+        THEN it fails fast with a validation error (no HTTP request is mocked, so none is made)
+        """
+        tool = GetFinancialLineItemFromIdentifiers(kfinance_client=mock_client)
+        start = time.perf_counter()
+        with pytest.raises(ValidationError):
+            await tool.arun_without_langchain(
+                identifiers=["SPGI"], line_item=self.OVERSIZED_LINE_ITEM
+            )
+        assert time.perf_counter() - start < 1
+
+    def test_non_string_line_item_rejected(self) -> None:
+        """
+        GIVEN a non-string line_item
+        WHEN validating the tool args
+        THEN a validation error is raised instead of an AttributeError
+        """
+        with pytest.raises(ValidationError, match="line_item must be a string"):
+            GetFinancialLineItemFromIdentifiersArgs.model_validate(
+                {"identifiers": ["SPGI"], "line_item": ["revenue"] * 1000}
+            )
+
+    def test_short_invalid_line_item_still_gets_suggestions(self) -> None:
+        """
+        GIVEN a short misspelled line_item
+        WHEN validating the tool args
+        THEN suggestions are still returned
+        """
+        with pytest.raises(ValidationError, match="Did you mean one of these"):
+            GetFinancialLineItemFromIdentifiersArgs.model_validate(
+                {"identifiers": ["SPGI"], "line_item": "revenues"}
+            )
+
+    def test_valid_line_item_at_limit_accepted(self) -> None:
+        """
+        GIVEN the longest valid line item name
+        WHEN validating the tool args
+        THEN it is accepted
+        """
+        longest = max(LINE_ITEM_NAMES_AND_ALIASES, key=len)
+        args = GetFinancialLineItemFromIdentifiersArgs.model_validate(
+            {"identifiers": ["SPGI"], "line_item": longest}
+        )
+        assert args.line_item == longest
+
+    def test_find_similar_line_items_bounds_direct_callers(self) -> None:
+        """
+        GIVEN an oversized input passed directly to _find_similar_line_items
+        WHEN searching for suggestions
+        THEN only the first MAX_LINE_ITEM_LENGTH characters are matched, so it returns quickly
+        """
+        descriptors = {name: "description" for name in LINE_ITEM_NAMES_AND_ALIASES}
+        start = time.perf_counter()
+        _find_similar_line_items("revenue" + "x" * 500_000, descriptors)
+        assert time.perf_counter() - start < 1
 
 
 def test_sale_line_item_dataitemids_not_swapped() -> None:
