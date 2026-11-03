@@ -774,7 +774,8 @@ class TestRefreshTokenExchange:
             json={"access_token": "fake_access_token"},
         )
 
-        assert api_client._get_access_token_via_refresh_token() == "fake_access_token"  # noqa: SLF001
+        access_token = api_client._get_access_token_via_refresh_token()  # noqa: SLF001
+        assert access_token == "fake_access_token"
 
         request = refresh_mock.last_request
         assert request.method == "POST"
