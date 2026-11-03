@@ -760,3 +760,26 @@ class TestFetchIssuerRatings:
         assert "21719" in resp.results
         assert "21835" in resp.results
         assert resp.errors == {}
+
+
+class TestRefreshTokenExchange:
+    def test_refresh_token_sent_in_post_body_not_url(self, requests_mock: Mocker) -> None:
+        """
+        WHEN an access token is fetched via a refresh token
+        THEN the token is sent in a form-encoded POST body and never in the URL
+        """
+        api_client = KFinanceApiClient(refresh_token="fake_refresh_token")
+        refresh_mock = requests_mock.post(
+            url=f"{api_client.api_host}/oauth2/refresh",
+            json={"access_token": "fake_access_token"},
+        )
+
+        access_token = api_client._get_access_token_via_refresh_token()  # noqa: SLF001
+        assert access_token == "fake_access_token"
+
+        request = refresh_mock.last_request
+        assert request.method == "POST"
+        assert request.query == ""
+        assert "fake_refresh_token" not in request.url
+        assert request.headers["Content-Type"] == "application/x-www-form-urlencoded"
+        assert request.text == "refresh_token=fake_refresh_token"
