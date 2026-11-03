@@ -193,15 +193,19 @@ class KFinanceApiClient:
             )
             response.raise_for_status()
         except requests.RequestException as exc:
+            original_request = exc.request
+            if original_request is None and exc.response is not None:
+                original_request = exc.response.request
             request = None
-            if isinstance(exc.request, requests.PreparedRequest):
-                request = exc.request.copy()
+            if isinstance(original_request, requests.PreparedRequest):
+                request = original_request.copy()
                 request.url = redact_refresh_token(request.url or "")
             redacted_response = None
             if exc.response is not None:
                 redacted_response = copy(exc.response)
                 redacted_response.url = redact_refresh_token(exc.response.url)
-                redacted_response.request = request
+                if request is not None:
+                    redacted_response.request = request
             raise type(exc)(
                 redact_refresh_token(str(exc)), request=request, response=redacted_response
             ) from None
