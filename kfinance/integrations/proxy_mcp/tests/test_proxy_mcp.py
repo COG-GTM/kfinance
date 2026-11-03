@@ -56,6 +56,10 @@ class TestInboundAccessMiddleware:
     def test_health_is_unauthenticated(self) -> None:
         assert _guarded_app().get("/health").status_code == 200
 
+    @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH"])
+    def test_health_exemption_is_get_only(self, method: str) -> None:
+        assert _guarded_app().request(method, "/health").status_code == 401
+
     def test_untrusted_origin_is_rejected_even_with_token(self) -> None:
         response = _guarded_app((TRUSTED_ORIGIN,)).post(
             "/mcp",
