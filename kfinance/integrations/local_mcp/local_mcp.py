@@ -1,6 +1,8 @@
+from pathlib import Path
 from typing import Literal, Optional
 
 import click
+from click.core import ParameterSource
 from fastmcp.tools import FunctionTool
 from fastmcp.utilities.logging import get_logger
 from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -11,6 +13,48 @@ from kfinance.integrations.tool_calling.tool_calling_models import KfinanceTool
 
 
 logger = get_logger(__name__)
+
+REFRESH_TOKEN_ENV_VAR = "KFINANCE_REFRESH_TOKEN"
+CLIENT_ID_ENV_VAR = "KFINANCE_CLIENT_ID"
+PRIVATE_KEY_ENV_VAR = "KFINANCE_PRIVATE_KEY"
+PRIVATE_KEY_FILE_ENV_VAR = "KFINANCE_PRIVATE_KEY_FILE"
+
+DEPRECATED_SECRET_FLAG_WARNING = (
+    "WARNING: passing {flag} on the command line is deprecated and insecure: command-line "
+    "arguments are visible to every user on this host (ps, /proc/<pid>/cmdline) and are kept "
+    "in shell history. Set the {env_var} environment variable instead{alternative}."
+)
+
+
+def warn_if_secret_passed_on_command_line(
+    ctx: click.Context, param_name: str, flag: str, env_var: str, alternative: str = ""
+) -> None:
+    """Print a deprecation warning to stderr when a secret came from argv rather than the env."""
+    if ctx.get_parameter_source(param_name) == ParameterSource.COMMANDLINE:
+        # stdout carries the MCP protocol for the stdio transport, so warn on stderr.
+        click.echo(
+            DEPRECATED_SECRET_FLAG_WARNING.format(
+                flag=flag, env_var=env_var, alternative=alternative
+            ),
+            err=True,
+        )
+
+
+def resolve_private_key(
+    private_key: Optional[str], private_key_file: Optional[Path]
+) -> Optional[str]:
+    """Return the private key from the inline value or from the key file."""
+    if private_key_file is None:
+        return private_key
+    if private_key:
+        raise click.UsageError(
+            f"Provide the private key either via {PRIVATE_KEY_ENV_VAR} or via "
+            f"--private-key-file/{PRIVATE_KEY_FILE_ENV_VAR}, not both."
+        )
+    key = private_key_file.read_text().strip()
+    if not key:
+        raise click.BadParameter(f"{private_key_file} is empty.", param_hint="--private-key-file")
+    return key
 
 
 def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTool:
@@ -46,14 +90,46 @@ def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTo
     flag_value="streamable-http",
     help="Use streamable HTTP transport",
 )
-@click.option("--refresh-token", required=False)
-@click.option("--client-id", required=False)
-@click.option("--private-key", required=False)
+@click.option(
+    "--refresh-token",
+    envvar=REFRESH_TOKEN_ENV_VAR,
+    show_envvar=True,
+    required=False,
+    help=f"OAuth refresh token. Set {REFRESH_TOKEN_ENV_VAR} instead; the flag is deprecated "
+    "because command-line arguments are visible in the process list.",
+)
+@click.option(
+    "--client-id",
+    envvar=CLIENT_ID_ENV_VAR,
+    show_envvar=True,
+    required=False,
+    help="Client id for key-pair authentication.",
+)
+@click.option(
+    "--private-key",
+    envvar=PRIVATE_KEY_ENV_VAR,
+    show_envvar=True,
+    required=False,
+    help=f"Private key for key-pair authentication. Set {PRIVATE_KEY_ENV_VAR} or use "
+    "--private-key-file instead; the flag is deprecated because command-line arguments are "
+    "visible in the process list.",
+)
+@click.option(
+    "--private-key-file",
+    envvar=PRIVATE_KEY_FILE_ENV_VAR,
+    show_envvar=True,
+    required=False,
+    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path),
+    help="Path to a file containing the private key for key-pair authentication.",
+)
+@click.pass_context
 def run_mcp(
+    ctx: click.Context,
     transport: Literal["stdio", "sse", "streamable-http"],
     refresh_token: Optional[str] = None,
     client_id: Optional[str] = None,
     private_key: Optional[str] = None,
+    private_key_file: Optional[Path] = None,
 ) -> None:
     """Run the Kfinance MCP server with specified configuration.
 
@@ -66,6 +142,11 @@ def run_mcp(
     2. Key Pair: Uses client ID and private key for authentication
     3. Browser: Falls back to browser-based authentication flow
 
+    Credentials should be supplied through the KFINANCE_REFRESH_TOKEN, KFINANCE_CLIENT_ID and
+    KFINANCE_PRIVATE_KEY environment variables (or a private key file). The --refresh-token and
+    --private-key flags are deprecated because command-line arguments are visible to every
+    local user in the process list and are kept in shell history.
+
     :param transport: Transport protocol (stdio, sse, or streamable-http).
     :type transport: Literal["stdio", "sse", "streamable-http"]
     :param refresh_token: OAuth refresh token for authentication
@@ -74,7 +155,21 @@ def run_mcp(
     :type client_id: str
     :param private_key: Private key for key-pair authentication.
     :type private_key: str
+    :param private_key_file: Path to a file containing the private key.
+    :type private_key_file: Path
     """
+    warn_if_secret_passed_on_command_line(
+        ctx, "refresh_token", "--refresh-token", REFRESH_TOKEN_ENV_VAR
+    )
+    warn_if_secret_passed_on_command_line(
+        ctx,
+        "private_key",
+        "--private-key",
+        PRIVATE_KEY_ENV_VAR,
+        alternative=" or pass --private-key-file <path>",
+    )
+    private_key = resolve_private_key(private_key, private_key_file)
+
     logger.info("Server will run with %s transport", transport)
     if refresh_token:
         logger.info("The client will be authenticated using a refresh token")

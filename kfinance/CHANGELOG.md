@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.2.0
+- Local MCP server (`python -m kfinance.mcp`) now reads credentials from the
+  `KFINANCE_REFRESH_TOKEN`, `KFINANCE_CLIENT_ID` and `KFINANCE_PRIVATE_KEY` environment
+  variables, and the private key from `--private-key-file` / `KFINANCE_PRIVATE_KEY_FILE`, so
+  they no longer have to appear in the process list or shell history.
+- Deprecate the `--refresh-token` and `--private-key` flags. They still work but print a
+  warning to stderr when used.
+
 ## v7.1.2
 - Fix swapped `dataitemid`/`spgi_name` for `gain_from_sale_of_assets` and
   `gain_from_sale_of_investments` line item metadata.
