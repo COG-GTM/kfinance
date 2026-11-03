@@ -3,6 +3,7 @@ from contextlib import contextmanager
 import logging
 from time import time
 from typing import Any, Callable, Generator, Optional
+from urllib.parse import quote
 from uuid import uuid4
 
 import jwt
@@ -76,6 +77,20 @@ DEFAULT_API_VERSION: int = 1
 DEFAULT_OKTA_HOST: str = "https://kensho.okta.com"
 DEFAULT_OKTA_AUTH_SERVER: str = "default"
 DEFAULT_MAX_WORKERS: int = 10
+
+
+def _path_segment(value: object) -> str:
+    """Percent-encode a value so it is always a single URL path segment.
+
+    Characters like "/", "?", "#", and "%" are encoded so caller-supplied values
+    cannot change the request route or add query parameters. The dot segments
+    "." and ".." are rejected because requests decodes "%2E" back to "." before
+    sending, so they cannot be made safe by encoding.
+    """
+    segment = quote(f"{value}", safe="")
+    if segment in (".", ".."):
+        raise ValueError(f"Invalid URL path segment: {value!r}")
+    return segment
 
 
 class KFinanceApiClient:
@@ -278,34 +293,34 @@ class KFinanceApiClient:
 
     def fetch_id_triple(self, identifier: str, exchange_code: Optional[str] = None) -> dict:
         """Get the ID triple from [identifier]."""
-        url = f"{self.url_base}id/{identifier}"
+        url = f"{self.url_base}id/{_path_segment(identifier)}"
         if exchange_code is not None:
-            url = url + f"/exchange_code/{exchange_code}"
+            url = url + f"/exchange_code/{_path_segment(exchange_code)}"
         return self.fetch(url)
 
     def fetch_isin(self, security_id: int) -> dict:
         """Get the ISIN."""
-        url = f"{self.url_base}isin/{security_id}"
+        url = f"{self.url_base}isin/{_path_segment(security_id)}"
         return self.fetch(url)
 
     def fetch_cusip(self, security_id: int) -> dict:
         """Get the CUSIP."""
-        url = f"{self.url_base}cusip/{security_id}"
+        url = f"{self.url_base}cusip/{_path_segment(security_id)}"
         return self.fetch(url)
 
     def fetch_primary_security(self, company_id: int) -> dict:
         """Get the primary security of a company."""
-        url = f"{self.url_base}securities/{company_id}/primary"
+        url = f"{self.url_base}securities/{_path_segment(company_id)}/primary"
         return self.fetch(url)
 
     def fetch_securities(self, company_id: int) -> dict:
         """Get the list of securities of a company."""
-        url = f"{self.url_base}securities/{company_id}"
+        url = f"{self.url_base}securities/{_path_segment(company_id)}"
         return self.fetch(url)
 
     def fetch_primary_trading_item(self, security_id: int) -> dict:
         """Get the primary trading item of a security."""
-        url = f"{self.url_base}trading_items/{security_id}/primary"
+        url = f"{self.url_base}trading_items/{_path_segment(security_id)}/primary"
         return self.fetch(url)
 
     def unified_fetch_id_triples(self, identifiers: list[str]) -> UnifiedIdTripleResponse:
@@ -316,7 +331,7 @@ class KFinanceApiClient:
 
     def fetch_trading_items(self, security_id: int) -> dict:
         """Get the list of trading items of a security."""
-        url = f"{self.url_base}trading_items/{security_id}"
+        url = f"{self.url_base}trading_items/{_path_segment(security_id)}"
         return self.fetch(url)
 
     def fetch_history(
@@ -329,17 +344,17 @@ class KFinanceApiClient:
     ) -> PriceHistory:
         """Get the pricing history."""
         url = (
-            f"{self.url_base}pricing/{trading_item_id}/"
-            f"{start_date if start_date is not None else 'none'}/"
-            f"{end_date if end_date is not None else 'none'}/"
-            f"{periodicity if periodicity else 'none'}/"
+            f"{self.url_base}pricing/{_path_segment(trading_item_id)}/"
+            f"{_path_segment(start_date if start_date is not None else 'none')}/"
+            f"{_path_segment(end_date if end_date is not None else 'none')}/"
+            f"{_path_segment(periodicity if periodicity else 'none')}/"
             f"{'adjusted' if is_adjusted else 'unadjusted'}"
         )
         return PriceHistory.model_validate(self.fetch(url))
 
     def fetch_history_metadata(self, trading_item_id: int) -> HistoryMetadataResp:
         """Get the pricing history metadata."""
-        url = f"{self.url_base}pricing/{trading_item_id}/metadata"
+        url = f"{self.url_base}pricing/{_path_segment(trading_item_id)}/metadata"
         return HistoryMetadataResp.model_validate(self.fetch(url))
 
     def fetch_market_caps_tevs_and_shares_outstanding(
@@ -350,9 +365,9 @@ class KFinanceApiClient:
     ) -> Capitalizations:
         """Get the market cap, TEV, and shares outstanding for a company."""
         url = (
-            f"{self.url_base}market_cap/{company_id}/"
-            f"{start_date if start_date is not None else 'none'}/"
-            f"{end_date if end_date is not None else 'none'}"
+            f"{self.url_base}market_cap/{_path_segment(company_id)}/"
+            f"{_path_segment(start_date if start_date is not None else 'none')}/"
+            f"{_path_segment(end_date if end_date is not None else 'none')}"
         )
         return Capitalizations.model_validate(self.fetch(url))
 
@@ -458,10 +473,10 @@ class KFinanceApiClient:
     ) -> bytes:
         """Get the price chart."""
         url = (
-            f"{self.url_base}price_chart/{trading_item_id}/"
-            f"{start_date if start_date is not None else 'none'}/"
-            f"{end_date if end_date is not None else 'none'}/"
-            f"{periodicity if periodicity else 'none'}/"
+            f"{self.url_base}price_chart/{_path_segment(trading_item_id)}/"
+            f"{_path_segment(start_date if start_date is not None else 'none')}/"
+            f"{_path_segment(end_date if end_date is not None else 'none')}/"
+            f"{_path_segment(periodicity if periodicity else 'none')}/"
             f"{'adjusted' if is_adjusted else 'unadjusted'}"
         )
 
@@ -612,21 +627,21 @@ class KFinanceApiClient:
 
     def fetch_info(self, company_id: int) -> dict:
         """Get the company info."""
-        url = f"{self.url_base}info/{company_id}"
+        url = f"{self.url_base}info/{_path_segment(company_id)}"
         return self.fetch(url)
 
     def fetch_earnings_dates(self, company_id: int) -> dict:
         """Get the earnings dates."""
-        url = f"{self.url_base}earnings/{company_id}/dates"
+        url = f"{self.url_base}earnings/{_path_segment(company_id)}/dates"
         return self.fetch(url)
 
     def fetch_geography_groups(
         self, country_iso_code: str, state_iso_code: Optional[str] = None, fetch_ticker: bool = True
     ) -> dict[str, list]:
         """Fetch geography groups"""
-        url = f"{self.url_base}{'ticker_groups' if fetch_ticker else 'company_groups'}/geo/country/{country_iso_code}"
+        url = f"{self.url_base}{'ticker_groups' if fetch_ticker else 'company_groups'}/geo/country/{_path_segment(country_iso_code)}"
         if state_iso_code:
-            url = url + f"/{state_iso_code}"
+            url = url + f"/{_path_segment(state_iso_code)}"
         return self.fetch(url)
 
     def fetch_ticker_geography_groups(
@@ -655,7 +670,7 @@ class KFinanceApiClient:
         self, exchange_code: str, fetch_ticker: bool = True
     ) -> dict[str, list]:
         """Fetch exchange groups"""
-        url = f"{self.url_base}{'ticker_groups' if fetch_ticker else 'trading_item_groups'}/exchange/{exchange_code}"
+        url = f"{self.url_base}{'ticker_groups' if fetch_ticker else 'trading_item_groups'}/exchange/{_path_segment(exchange_code)}"
         return self.fetch(url)
 
     def fetch_ticker_exchange_groups(self, exchange_code: str) -> list[IdentificationTriple]:
@@ -713,7 +728,7 @@ class KFinanceApiClient:
                 "Invalid parameters: country_iso_code must be provided with a state_iso_code value"
             )
         else:
-            url = f"{self.url_base}ticker_groups/filters/geo/{str(country_iso_code).lower()}/{str(state_iso_code).lower()}/simple/{str(simple_industry).lower()}/exchange/{str(exchange_code).lower()}"
+            url = f"{self.url_base}ticker_groups/filters/geo/{_path_segment(str(country_iso_code).lower())}/{_path_segment(str(state_iso_code).lower())}/simple/{_path_segment(str(simple_industry).lower())}/exchange/{_path_segment(str(exchange_code).lower())}"
             return self._tickers_response_to_id_triple(self.fetch(url))
 
     def fetch_companies_from_business_relationship(
@@ -730,7 +745,7 @@ class KFinanceApiClient:
         :return: A dictionary containing lists of current and previous company IDs and names that have the specified relationship with the given company_id.
         :rtype: RelationshipResponse
         """
-        url = f"{self.url_base}relationship/{company_id}/{relationship_type}"
+        url = f"{self.url_base}relationship/{_path_segment(company_id)}/{_path_segment(relationship_type)}"
         return RelationshipResponse.model_validate(self.fetch(url))
 
     def fetch_ticker_from_industry_code(
@@ -748,7 +763,7 @@ class KFinanceApiClient:
         :return: A list of identification triples [company_id, security_id, trading_item_id] that are classified in the given industry_code and industry_classification.
         :rtype: list[IdentificationTriple]
         """
-        url = f"{self.url_base}ticker_groups/industry/{industry_classification}/{industry_code}"
+        url = f"{self.url_base}ticker_groups/industry/{_path_segment(industry_classification)}/{_path_segment(industry_code)}"
         return self._tickers_response_to_id_triple(self.fetch(url))
 
     def fetch_company_from_industry_code(
@@ -766,28 +781,28 @@ class KFinanceApiClient:
         :return: A dictionary containing the list of companies that are classified in the given industry_code and industry_classification.
         :rtype: dict[str, list[int]]
         """
-        url = f"{self.url_base}company_groups/industry/{industry_classification}/{industry_code}"
+        url = f"{self.url_base}company_groups/industry/{_path_segment(industry_classification)}/{_path_segment(industry_code)}"
         return self.fetch(url)
 
     def fetch_earnings(self, company_id: int) -> EarningsCallResp:
         """Get the earnings for a company."""
-        url = f"{self.url_base}earnings/{company_id}"
+        url = f"{self.url_base}earnings/{_path_segment(company_id)}"
         return EarningsCallResp.model_validate(self.fetch(url))
 
     def fetch_transcript(self, key_dev_id: int) -> dict:
         """Get the transcript for an earnings item."""
-        url = f"{self.url_base}transcript/{key_dev_id}"
+        url = f"{self.url_base}transcript/{_path_segment(key_dev_id)}"
         return self.fetch(url)
 
     def fetch_company_descriptions(self, company_id: int) -> CompanyDescriptions:
         """Get the short description (summary) and long description for a company"""
-        url = f"{self.url_base}info/{company_id}/descriptions"
+        url = f"{self.url_base}info/{_path_segment(company_id)}/descriptions"
         result = self.fetch(url)
         return CompanyDescriptions.model_validate(result)
 
     def fetch_company_other_names(self, company_id: int) -> CompanyOtherNames:
         """Get the alternate, historical, and native names for a company"""
-        url = f"{self.url_base}info/{company_id}/names"
+        url = f"{self.url_base}info/{_path_segment(company_id)}/names"
         result = self.fetch(url)
         return CompanyOtherNames.model_validate(result)
 
@@ -820,9 +835,9 @@ class KFinanceApiClient:
         self, company_id: int, competitor_source: CompetitorSource
     ) -> CompetitorResponse:
         """Get the competitors for a company."""
-        url = f"{self.url_base}competitors/{company_id}"
+        url = f"{self.url_base}competitors/{_path_segment(company_id)}"
         if competitor_source is not CompetitorSource.all:
-            url = url + f"/{competitor_source}"
+            url = url + f"/{_path_segment(competitor_source)}"
         return CompetitorResponse.model_validate(self.fetch(url))
 
     def fetch_professionals_company(
@@ -832,7 +847,7 @@ class KFinanceApiClient:
         timeframe: Timeframe = Timeframe.all,
     ) -> CompanyProfessionalsResp:
         """Get the professionals for a company."""
-        url = f"{self.url_base}professionals/company/{company_id}/{professional_type}/{timeframe}"
+        url = f"{self.url_base}professionals/company/{_path_segment(company_id)}/{_path_segment(professional_type)}/{_path_segment(timeframe)}"
         return CompanyProfessionalsResp.model_validate(self.fetch(url))
 
     def fetch_professionals_person(
@@ -840,7 +855,7 @@ class KFinanceApiClient:
         person_id: int,
     ) -> PersonProfessionalsResp:
         """Get the professional history for a person."""
-        url = f"{self.url_base}professionals/person/{person_id}"
+        url = f"{self.url_base}professionals/person/{_path_segment(person_id)}"
         return PersonProfessionalsResp.model_validate(self.fetch(url))
 
     def fetch_mergers_for_company(
@@ -859,7 +874,7 @@ class KFinanceApiClient:
         """
         start_date_str = start_date if start_date else "none"
         end_date_str = end_date if end_date else "none"
-        url = f"{self.url_base}mergers/{company_id}/{start_date_str}/{end_date_str}"
+        url = f"{self.url_base}mergers/{_path_segment(company_id)}/{_path_segment(start_date_str)}/{_path_segment(end_date_str)}"
         return MergersResp.model_validate(self.fetch(url))
 
     def fetch_mergers_info(
@@ -901,7 +916,7 @@ class KFinanceApiClient:
         :return: A dictionary containing the list of companies advising a company involved with a merger or acquisition, along with their advisor type.
         :rtype: dict[str, list[dict[str, int | str]]]
         """
-        url = f"{self.url_base}merger/info/{transaction_id}/advisors/{advised_company_id}"
+        url = f"{self.url_base}merger/info/{_path_segment(transaction_id)}/advisors/{_path_segment(advised_company_id)}"
         return self.fetch(url)
 
     def fetch_rounds_of_funding_for_company(
@@ -915,7 +930,7 @@ class KFinanceApiClient:
         :return: A RoundsOfFundingResp, containing transaction id, closed_date, funding_round_notes, and funding_type for each round of funding.
         :rtype: RoundsOfFundingResp
         """
-        url = f"{self.url_base}fundingrounds/target/{company_id}"
+        url = f"{self.url_base}fundingrounds/target/{_path_segment(company_id)}"
         return RoundsOfFundingResp.model_validate(self.fetch(url))
 
     def fetch_rounds_of_funding_for_investing_company(
@@ -929,7 +944,7 @@ class KFinanceApiClient:
         :return: A RoundsOfFundingResp, containing transaction id, closed_date, funding_round_notes, and funding_type for each round of funding.
         :rtype: RoundsOfFundingResp
         """
-        url = f"{self.url_base}fundingrounds/investor/{company_id}"
+        url = f"{self.url_base}fundingrounds/investor/{_path_segment(company_id)}"
         return RoundsOfFundingResp.model_validate(self.fetch(url))
 
     def fetch_round_of_funding_info(
@@ -943,7 +958,7 @@ class KFinanceApiClient:
         :return: A RoundOfFundingInfo, containing the timeline, participants, transaction, and security of the round.
         :rtype: RoundOfFundingInfo
         """
-        url = f"{self.url_base}fundinground/info/{transaction_id}"
+        url = f"{self.url_base}fundinground/info/{_path_segment(transaction_id)}"
         return RoundOfFundingInfo.model_validate(self.fetch(url))
 
     def fetch_advisors_for_company_raising_round_of_funding(
@@ -958,7 +973,7 @@ class KFinanceApiClient:
         :return: An AdvisorsResp model containing the list of companies advising a company raising a round of funding, along with their advisor type and fee information.
         :rtype: AdvisorsResp
         """
-        url = f"{self.url_base}fundinground/info/{transaction_id}/advisors/target"
+        url = f"{self.url_base}fundinground/info/{_path_segment(transaction_id)}/advisors/target"
         return AdvisorsResp.model_validate(self.fetch(url))
 
     def fetch_advisors_for_company_investing_in_round_of_funding(
@@ -976,7 +991,7 @@ class KFinanceApiClient:
         :return: An AdvisorsResp model containing the list of companies advising a company involved with a round of funding, along with their advisor type and fee information.
         :rtype: AdvisorsResp
         """
-        url = f"{self.url_base}fundinground/info/{transaction_id}/advisors/investor/{advised_company_id}"
+        url = f"{self.url_base}fundinground/info/{_path_segment(transaction_id)}/advisors/investor/{_path_segment(advised_company_id)}"
         return AdvisorsResp.model_validate(self.fetch(url))
 
     def fetch_estimates(
@@ -1071,7 +1086,7 @@ class KFinanceApiClient:
         company_id: int,
     ) -> SingleResultResp[ConsensusTargetPrice]:
         """Get consensus target price estimates"""
-        url = f"{self.url_base}estimates/consensus_target_price/{company_id}"
+        url = f"{self.url_base}estimates/consensus_target_price/{_path_segment(company_id)}"
         response_data = self.fetch(url)
         return SingleResultResp[ConsensusTargetPrice].model_validate(response_data)
 
@@ -1080,7 +1095,7 @@ class KFinanceApiClient:
         company_id: int,
     ) -> SingleResultResp[AnalystRecommendations]:
         """Get analyst recommendations"""
-        url = f"{self.url_base}estimates/analyst_recommendations/{company_id}"
+        url = f"{self.url_base}estimates/analyst_recommendations/{_path_segment(company_id)}"
         response_data = self.fetch(url)
         return SingleResultResp[AnalystRecommendations].model_validate(response_data)
 
