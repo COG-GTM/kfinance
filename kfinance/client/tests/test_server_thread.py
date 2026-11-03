@@ -52,6 +52,11 @@ def test_origin_from_url() -> None:
     assert origin_from_url("https://kfinance.kensho.com") == LOGIN_ORIGIN
     assert origin_from_url("https://KFinance.Kensho.com/some/path?x=1") == LOGIN_ORIGIN
     assert origin_from_url("http://localhost:8000/") == "http://localhost:8000"
+    assert origin_from_url("https://kfinance.kensho.com:443/") == LOGIN_ORIGIN
+    assert origin_from_url("http://example.com:80") == "http://example.com"
+    assert origin_from_url("https://example.com:8443") == "https://example.com:8443"
+    assert origin_from_url("http://user:pw@Example.com:8080/x") == "http://example.com:8080"
+    assert origin_from_url("http://[::1]:8000") == "http://[::1]:8000"
 
 
 def test_state_is_random_per_login() -> None:
@@ -156,10 +161,18 @@ def test_preflight_only_allows_login_origin(server_thread: ServerThread) -> None
     status, headers = _request(
         server_thread,
         "OPTIONS",
-        headers={"Origin": LOGIN_ORIGIN, "Access-Control-Request-Method": "POST"},
+        headers={
+            "Origin": LOGIN_ORIGIN,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type, x-requested-with",
+        },
     )
     assert status == 204
     assert headers["access-control-allow-origin"] == LOGIN_ORIGIN
+    allowed_headers = {
+        h.strip().lower() for h in headers["access-control-allow-headers"].split(",")
+    }
+    assert {"content-type", "x-requested-with"} <= allowed_headers
     assert "access-control-allow-credentials" not in headers
 
     status, headers = _request(

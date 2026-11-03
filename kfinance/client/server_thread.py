@@ -10,10 +10,19 @@ MAX_CONTENT_LENGTH = 64 * 1024
 REQUEST_TIMEOUT_SECONDS = 10
 
 
+DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
 def origin_from_url(url: str) -> str:
-    """Return the lower-cased scheme://host[:port] origin of a url."""
+    """Return the scheme://host[:port] origin of a url, serialized the way browsers send it."""
     parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}".lower()
+    scheme = parts.scheme.lower()
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    if parts.port is not None and parts.port != DEFAULT_PORTS.get(scheme):
+        host = f"{host}:{parts.port}"
+    return f"{scheme}://{host}"
 
 
 class ServerThread(Thread):
@@ -68,7 +77,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         """Add CORS headers, but only for the expected login origin."""
         if self._origin_allowed():
             self.send_header("Access-Control-Allow-Origin", self.thread.allowed_origin)
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Requested-With")
             self.send_header("Access-Control-Allow-Methods", "POST")
         self.send_header("Vary", "Origin")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
