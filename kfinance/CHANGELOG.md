@@ -1,5 +1,15 @@
 # Changelog
 
+## v8.0.0
+- Breaking changes:
+  - The local MCP server (`python -m kfinance.mcp`) now defaults to the stdio transport and
+    opens no network port. Pass `--sse` or `--streamable-http` to use a network transport.
+  - The `--sse` and `--streamable-http` transports require the `KFINANCE_MCP_AUTH_TOKEN`
+    environment variable (at least 32 characters). Clients must send it as
+    `Authorization: Bearer <token>`, and requests whose `Host` or `Origin` is not localhost
+    or the `--host` address are rejected.
+- Add `--host` and `--port` options for the network transports (default `127.0.0.1:8000`).
+
 ## v7.1.2
 - Fix swapped `dataitemid`/`spgi_name` for `gain_from_sale_of_assets` and
   `gain_from_sale_of_investments` line item metadata.

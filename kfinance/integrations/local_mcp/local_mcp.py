@@ -1,11 +1,21 @@
+import os
 from typing import Literal, Optional
 
 import click
 from fastmcp.tools import FunctionTool
 from fastmcp.utilities.logging import get_logger
 from langchain_core.utils.function_calling import convert_to_openai_tool
+import uvicorn
 
 from kfinance.client.kfinance import Client
+from kfinance.integrations.local_mcp.http_auth import (
+    AUTH_TOKEN_ENV_VAR,
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    MIN_AUTH_TOKEN_LENGTH,
+    BearerAuthMiddleware,
+    allowed_hosts_for,
+)
 from kfinance.integrations.local_mcp.kfinance_mcp import KfinanceMcp
 from kfinance.integrations.tool_calling.tool_calling_models import KfinanceTool
 
@@ -35,22 +45,84 @@ def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTo
     )
 
 
+def read_network_auth_token() -> str:
+    """Read the bearer token that clients of a network transport must present."""
+    auth_token = os.environ.get(AUTH_TOKEN_ENV_VAR, "").strip()
+    if len(auth_token) < MIN_AUTH_TOKEN_LENGTH:
+        raise click.UsageError(
+            f"The --sse and --streamable-http transports require the {AUTH_TOKEN_ENV_VAR} "
+            f"environment variable to hold a secret of at least {MIN_AUTH_TOKEN_LENGTH} "
+            "characters, which MCP clients must send as 'Authorization: Bearer <token>'. "
+            'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
+        )
+    return auth_token
+
+
+def serve_over_http(
+    kfinance_mcp: KfinanceMcp,
+    transport: Literal["sse", "streamable-http"],
+    host: str,
+    port: int,
+    auth_token: str,
+) -> None:
+    """Serve the MCP server over a network transport behind bearer auth and Host/Origin checks.
+
+    :param kfinance_mcp: The MCP server to serve.
+    :param transport: The network transport to use.
+    :param host: The address to bind to.
+    :param port: The port to bind to.
+    :param auth_token: The bearer token clients must present.
+    """
+    app = BearerAuthMiddleware(
+        app=kfinance_mcp.http_app(transport=transport),
+        auth_token=auth_token,
+        allowed_hosts=allowed_hosts_for(host),
+    )
+    logger.info("Server starting on %s:%s with bearer token authentication", host, port)
+    uvicorn.run(app, host=host, port=port)
+
+
 @click.command()
-@click.option("--stdio", "-s", "transport", flag_value="stdio", help="Use stdio transport")
 @click.option(
-    "--sse", "transport", flag_value="sse", default=True, help="Use SSE transport (default)"
+    "--stdio",
+    "-s",
+    "transport",
+    flag_value="stdio",
+    default=True,
+    help="Use stdio transport (default)",
+)
+@click.option(
+    "--sse",
+    "transport",
+    flag_value="sse",
+    help=f"Use SSE transport (requires {AUTH_TOKEN_ENV_VAR})",
 )
 @click.option(
     "--streamable-http",
     "transport",
     flag_value="streamable-http",
-    help="Use streamable HTTP transport",
+    help=f"Use streamable HTTP transport (requires {AUTH_TOKEN_ENV_VAR})",
+)
+@click.option(
+    "--host",
+    default=DEFAULT_HOST,
+    show_default=True,
+    help="Address the --sse/--streamable-http transports bind to",
+)
+@click.option(
+    "--port",
+    default=DEFAULT_PORT,
+    type=int,
+    show_default=True,
+    help="Port the --sse/--streamable-http transports bind to",
 )
 @click.option("--refresh-token", required=False)
 @click.option("--client-id", required=False)
 @click.option("--private-key", required=False)
 def run_mcp(
     transport: Literal["stdio", "sse", "streamable-http"],
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
     refresh_token: Optional[str] = None,
     client_id: Optional[str] = None,
     private_key: Optional[str] = None,
@@ -66,8 +138,17 @@ def run_mcp(
     2. Key Pair: Uses client ID and private key for authentication
     3. Browser: Falls back to browser-based authentication flow
 
+    stdio is the default transport and opens no network port. The sse and streamable-http
+    transports require every client to send `Authorization: Bearer <token>`, where the token
+    is read from the KFINANCE_MCP_AUTH_TOKEN environment variable, and reject requests whose
+    Host or Origin header is not the bound host or localhost.
+
     :param transport: Transport protocol (stdio, sse, or streamable-http).
     :type transport: Literal["stdio", "sse", "streamable-http"]
+    :param host: Address the network transports bind to.
+    :type host: str
+    :param port: Port the network transports bind to.
+    :type port: int
     :param refresh_token: OAuth refresh token for authentication
     :type refresh_token: str
     :param client_id: Client id for key-pair authentication
@@ -76,6 +157,8 @@ def run_mcp(
     :type private_key: str
     """
     logger.info("Server will run with %s transport", transport)
+    auth_token = None if transport == "stdio" else read_network_auth_token()
+
     if refresh_token:
         logger.info("The client will be authenticated using a refresh token")
         kfinance_client = Client(refresh_token=refresh_token)
@@ -91,8 +174,18 @@ def run_mcp(
         logger.info("Adding %s to server", langchain_tool.name)
         kfinance_mcp.add_tool(build_mcp_tool_from_kfinance_tool(langchain_tool))
 
-    logger.info("Server starting")
-    kfinance_mcp.run(transport=transport)
+    if transport == "stdio":
+        logger.info("Server starting")
+        kfinance_mcp.run(transport=transport)
+    else:
+        assert auth_token is not None
+        serve_over_http(
+            kfinance_mcp=kfinance_mcp,
+            transport=transport,
+            host=host,
+            port=port,
+            auth_token=auth_token,
+        )
 
 
 if __name__ == "__main__":
