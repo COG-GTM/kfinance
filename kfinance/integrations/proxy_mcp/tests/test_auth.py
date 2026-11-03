@@ -55,3 +55,5 @@ class TestRefreshTokenDispenser:
         assert REFRESH_TOKEN not in str(exc_info.value)
         assert "refresh_token=[REDACTED]" in str(exc_info.value)
         assert exc_info.value.response.status_code == 401
+        assert REFRESH_TOKEN not in str(exc_info.value.request.url)
+        assert REFRESH_TOKEN not in str(exc_info.value.response.request.url)

@@ -7,7 +7,7 @@ REDACTED = "[REDACTED]"
 # Loggers that record outgoing request URLs (including the query string).
 URL_LOGGING_LOGGERS = ("httpx", "urllib3.connectionpool")
 
-_REFRESH_TOKEN_PATTERN = re.compile(r"(refresh_token=)[^&\s'\"]+")
+_REFRESH_TOKEN_PATTERN = re.compile(r"(refresh(?:_|%5F)token=)[^&\s'\"]+", re.IGNORECASE)
 
 
 def redact_refresh_token(text: str) -> str:

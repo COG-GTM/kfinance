@@ -31,6 +31,14 @@ REFRESH_TOKEN = "s3cr3t-refresh-token"
             f"'https://h/r?refresh_token={REFRESH_TOKEN}'",
             f"'https://h/r?refresh_token={REDACTED}'",
         ),
+        (
+            f"https://h/r?refresh%5Ftoken={REFRESH_TOKEN}",
+            f"https://h/r?refresh%5Ftoken={REDACTED}",
+        ),
+        (
+            f"https://h/r?Refresh_Token={REFRESH_TOKEN}",
+            f"https://h/r?Refresh_Token={REDACTED}",
+        ),
         ("no secrets here", "no secrets here"),
     ],
 )
@@ -89,6 +97,9 @@ class TestRefreshTokenExchange:
         assert REFRESH_TOKEN not in str(exc_info.value)
         assert exc_info.value.response is not None
         assert exc_info.value.response.status_code == 401
+        assert REFRESH_TOKEN not in exc_info.value.response.url
+        assert exc_info.value.request is not None
+        assert REFRESH_TOKEN not in str(exc_info.value.request.url)
 
     def test_refresh_token_not_in_connection_error(self, requests_mock: Mocker) -> None:
         requests_mock.get(

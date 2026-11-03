@@ -138,8 +138,15 @@ class RefreshTokenDispenser(ClientAccessTokenDispenser):
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            request = httpx.Request(exc.request.method, redact_refresh_token(str(exc.request.url)))
+            redacted_response = httpx.Response(
+                exc.response.status_code,
+                headers=exc.response.headers,
+                content=exc.response.content,
+                request=request,
+            )
             raise httpx.HTTPStatusError(
-                redact_refresh_token(str(exc)), request=exc.request, response=exc.response
+                redact_refresh_token(str(exc)), request=request, response=redacted_response
             ) from None
         token = response.json()["access_token"]
         logger.info("Token acquired via refresh token exchange")

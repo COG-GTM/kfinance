@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from copy import copy
 import logging
 from time import time
 from typing import Any, Callable, Generator, Optional
@@ -192,8 +193,17 @@ class KFinanceApiClient:
             )
             response.raise_for_status()
         except requests.RequestException as exc:
+            request = None
+            if isinstance(exc.request, requests.PreparedRequest):
+                request = exc.request.copy()
+                request.url = redact_refresh_token(request.url or "")
+            redacted_response = None
+            if exc.response is not None:
+                redacted_response = copy(exc.response)
+                redacted_response.url = redact_refresh_token(exc.response.url)
+                redacted_response.request = request
             raise type(exc)(
-                redact_refresh_token(str(exc)), request=exc.request, response=exc.response
+                redact_refresh_token(str(exc)), request=request, response=redacted_response
             ) from None
         return response.json().get("access_token")
 
