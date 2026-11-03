@@ -73,8 +73,10 @@ Examples:
 # Read the token without echoing it or writing it to shell history
 read -rs KFINANCE_REFRESH_TOKEN && export KFINANCE_REFRESH_TOKEN
 
-# Using stdio with MCP Inspector
-npx @modelcontextprotocol/inspector -e KFINANCE_REFRESH_TOKEN="$KFINANCE_REFRESH_TOKEN" python -m kfinance.mcp --stdio
+# Using stdio with MCP Inspector: put the token in the `env` block of an MCP config file
+# (see the JSON example below, `chmod 600` it) instead of passing `-e KEY=value`, which
+# would expose the value in the inspector's own command line.
+npx @modelcontextprotocol/inspector --config kfinance_mcp.json --server kfinance
 
 # Using SSE (default)
 python -m kfinance.mcp
