@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from copy import copy
 import logging
 from time import time
 from typing import Any, Callable, Generator, Optional
@@ -7,8 +8,10 @@ from uuid import uuid4
 
 import jwt
 import requests
+from requests.structures import CaseInsensitiveDict
 
 from kfinance.client.industry_models import IndustryClassification
+from kfinance.client.log_redaction import install_refresh_token_log_filter, redact_refresh_token
 from kfinance.client.models.date_and_period_models import (
     EstimatePeriodType,
     EstimateType,
@@ -113,6 +116,7 @@ class KFinanceApiClient:
         """
         if refresh_token is not None:
             self.refresh_token = refresh_token
+            install_refresh_token_log_filter()
             self._access_token_refresh_func: Callable[..., str] = (
                 self._get_access_token_via_refresh_token
             )
@@ -182,11 +186,32 @@ class KFinanceApiClient:
 
     def _get_access_token_via_refresh_token(self) -> str:
         """Get an access token via oauth by submitting a refresh token."""
-        response = requests.get(
-            f"{self.api_host}/oauth2/refresh?refresh_token={self.refresh_token}",
-            timeout=60,
-        )
-        response.raise_for_status()
+        try:
+            response = requests.get(
+                f"{self.api_host}/oauth2/refresh",
+                params={"refresh_token": self.refresh_token},
+                timeout=60,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            original_request = exc.request
+            if original_request is None and exc.response is not None:
+                original_request = exc.response.request
+            request = None
+            if original_request is not None:
+                request = requests.PreparedRequest()
+                request.method = original_request.method
+                request.url = redact_refresh_token(original_request.url or "")
+                request.headers = CaseInsensitiveDict(original_request.headers)
+            redacted_response = None
+            if exc.response is not None:
+                redacted_response = copy(exc.response)
+                redacted_response.url = redact_refresh_token(exc.response.url)
+                if request is not None:
+                    redacted_response.request = request
+            raise type(exc)(
+                redact_refresh_token(str(exc)), request=request, response=redacted_response
+            ) from None
         return response.json().get("access_token")
 
     def _get_access_token_via_keypair(self) -> str:

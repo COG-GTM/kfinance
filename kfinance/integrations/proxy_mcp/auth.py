@@ -7,6 +7,8 @@ from typing import Generator, Generic, TypeVar
 import httpx
 from jwt import decode as jwt_decode, encode
 
+from kfinance.client.log_redaction import install_refresh_token_log_filter, redact_refresh_token
+
 
 T = TypeVar("T")
 
@@ -107,7 +109,11 @@ class ClientAccessTokenDispenser(ABC):
 
 
 class RefreshTokenDispenser(ClientAccessTokenDispenser):
-    """Exchanges a refresh token via GET {url}?refresh_token={token} -> {"access_token": "..."}."""
+    """Exchanges a refresh token via GET {url}?refresh_token={token} -> {"access_token": "..."}.
+
+    The refresh token is passed via ``params`` and redacted from the httpx request log and from
+    raised HTTP errors, so it never reaches application logs in plain text.
+    """
 
     def __init__(
         self,
@@ -121,13 +127,27 @@ class RefreshTokenDispenser(ClientAccessTokenDispenser):
         self._refresh_token = refresh_token
         self._refresh_url = refresh_url
         self._http_client = httpx.Client(timeout=60)
+        install_refresh_token_log_filter()
 
     def refresh_access_token(self) -> ClientAccessToken:
         """Exchange the refresh token for a new access token via HTTP GET."""
         response = self._http_client.get(
-            f"{self._refresh_url}?refresh_token={self._refresh_token}",
+            self._refresh_url,
+            params={"refresh_token": self._refresh_token},
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            request = httpx.Request(exc.request.method, redact_refresh_token(str(exc.request.url)))
+            redacted_response = httpx.Response(
+                exc.response.status_code,
+                headers=exc.response.headers,
+                content=exc.response.content,
+                request=request,
+            )
+            raise httpx.HTTPStatusError(
+                redact_refresh_token(str(exc)), request=request, response=redacted_response
+            ) from None
         token = response.json()["access_token"]
         logger.info("Token acquired via refresh token exchange")
         return ClientAccessToken(token=token)
