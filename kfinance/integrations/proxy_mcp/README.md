@@ -24,7 +24,7 @@ All configuration is via environment variables (powered by pydantic-settings).
 | `AUTH_PRIVATE_KEY` | Yes* | — | Private key for key pair authentication |
 | `AUTH_OKTA_HOST` | No | `https://kensho.okta.com` | Okta host URL |
 | `AUTH_REFRESH_TOKEN` | Yes* | — | Refresh token for obtaining access tokens (local dev fallback) |
-| `AUTH_REFRESH_URL` | No | `https://kfinance.kensho.com/oauth2/refresh` | Token refresh endpoint |
+| `AUTH_REFRESH_URL` | No | `https://kfinance.kensho.com/oauth2/refresh` | Token refresh endpoint (refresh token is sent as a form-encoded POST body) |
 
 *Either both `AUTH_CLIENT_ID` and `AUTH_PRIVATE_KEY`, or `AUTH_REFRESH_TOKEN` must be set.
 
