@@ -1,4 +1,4 @@
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from threading import Thread
 
@@ -22,7 +22,7 @@ class ServerThread(Thread):
             self.server.handle_request()
 
 
-class WebRequestHandler(SimpleHTTPRequestHandler):
+class WebRequestHandler(BaseHTTPRequestHandler):
     def __init__(self, thread: ServerThread):
         """Hold the thread itself in the handler, so the handler can set the refresh token."""
         self.thread = thread
@@ -49,6 +49,11 @@ class WebRequestHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         """This should never come up, but don't serve files or anything regardless."""
+        self.send_response(200)
+        self.end_headers()
+
+    def do_HEAD(self) -> None:
+        """Mirror do_GET so HEAD never reveals anything about the local filesystem."""
         self.send_response(200)
         self.end_headers()
 
