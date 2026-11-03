@@ -9,6 +9,7 @@ import jwt
 import requests
 
 from kfinance.client.industry_models import IndustryClassification
+from kfinance.client.log_redaction import install_refresh_token_log_filter, redact_refresh_token
 from kfinance.client.models.date_and_period_models import (
     EstimatePeriodType,
     EstimateType,
@@ -113,6 +114,7 @@ class KFinanceApiClient:
         """
         if refresh_token is not None:
             self.refresh_token = refresh_token
+            install_refresh_token_log_filter()
             self._access_token_refresh_func: Callable[..., str] = (
                 self._get_access_token_via_refresh_token
             )
@@ -182,11 +184,17 @@ class KFinanceApiClient:
 
     def _get_access_token_via_refresh_token(self) -> str:
         """Get an access token via oauth by submitting a refresh token."""
-        response = requests.get(
-            f"{self.api_host}/oauth2/refresh?refresh_token={self.refresh_token}",
-            timeout=60,
-        )
-        response.raise_for_status()
+        try:
+            response = requests.get(
+                f"{self.api_host}/oauth2/refresh",
+                params={"refresh_token": self.refresh_token},
+                timeout=60,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise type(exc)(
+                redact_refresh_token(str(exc)), request=exc.request, response=exc.response
+            ) from None
         return response.json().get("access_token")
 
     def _get_access_token_via_keypair(self) -> str:
