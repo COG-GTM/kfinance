@@ -7,6 +7,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 UNAUTHENTICATED_PATHS = frozenset({"/health"})
+UNAUTHENTICATED_METHODS = frozenset({"GET", "HEAD"})
 
 
 class InboundAccessMiddleware:
@@ -39,7 +40,7 @@ class InboundAccessMiddleware:
             await response(scope, receive, send)
             return
 
-        if scope["path"] in UNAUTHENTICATED_PATHS:
+        if scope["path"] in UNAUTHENTICATED_PATHS and scope["method"] in UNAUTHENTICATED_METHODS:
             await self.app(scope, receive, send)
             return
 
