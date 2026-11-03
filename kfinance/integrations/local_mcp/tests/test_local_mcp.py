@@ -76,6 +76,26 @@ class TestRunMcpTransport:
         assert isinstance(app, BearerAuthMiddleware)
         assert uvicorn_run.call_args.kwargs == {"host": "127.0.0.1", "port": 8000}
 
+    @pytest.mark.parametrize(
+        ("host", "warns"),
+        [("127.0.0.1", False), ("localhost", False), ("::1", False), ("0.0.0.0", True)],
+    )
+    def test_non_loopback_bind_warns_about_plain_http(
+        self, mock_client, monkeypatch, host: str, warns: bool
+    ) -> None:
+        """Binding beyond loopback warns that the bearer token travels unencrypted."""
+        monkeypatch.setenv(AUTH_TOKEN_ENV_VAR, TOKEN)
+        with (
+            patch.object(local_mcp.uvicorn, "run") as uvicorn_run,
+            patch.object(local_mcp, "logger") as logger,
+        ):
+            result = CliRunner().invoke(
+                local_mcp.run_mcp, ["--sse", "--host", host, "--refresh-token", "rt"]
+            )
+        assert result.exit_code == 0, result.output
+        assert uvicorn_run.call_args.kwargs["host"] == host
+        assert logger.warning.called is warns
+
 
 class TestHttpAppAuth:
     """End-to-end checks against the real FastMCP streamable HTTP app."""
