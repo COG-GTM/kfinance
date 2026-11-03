@@ -2,8 +2,8 @@ import time
 
 import httpx
 from langchain_core.utils.function_calling import convert_to_openai_tool
-import pytest
 from pydantic import ValidationError
+import pytest
 from pytest_httpx import HTTPXMock
 
 from kfinance.client.kfinance import Client
