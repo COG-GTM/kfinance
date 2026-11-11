@@ -1,12 +1,17 @@
+import re
+from typing import Any, Callable
 from unittest import TestCase
 from unittest.mock import MagicMock
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 import pytest
+from requests import HTTPError
 from requests_mock import Mocker
 
 from kfinance.client.fetch import KFinanceApiClient
-from kfinance.client.kfinance import Client
+from kfinance.client.industry_models import IndustryClassification
+from kfinance.client.kfinance import Client, Company, TradingItem
 from kfinance.client.models.date_and_period_models import EstimateType, Periodicity, PeriodType
 from kfinance.client.models.response_models import SingleResultResp
 from kfinance.conftest import SPGI_COMPANY_ID
@@ -760,3 +765,210 @@ class TestFetchIssuerRatings:
         assert "21719" in resp.results
         assert "21835" in resp.results
         assert resp.errors == {}
+
+
+class TestPathSegmentEncoding:
+    @pytest.fixture
+    def sent_paths(self, requests_mock: Mocker, mock_client: Client) -> list[str]:
+        """Record the raw (not lowercased) path of every outgoing GET request."""
+        paths: list[str] = []
+
+        def record(request, context):  # type: ignore[no-untyped-def]
+            paths.append(urlsplit(request.url).path)
+            context.status_code = 404
+            return {}
+
+        requests_mock.get(re.compile(r"https://kfinance\.kensho\.com/api/v1/.*"), json=record)
+        return paths
+
+    def test_ticker_identifier_is_single_path_segment(
+        self, sent_paths: list[str], mock_client: Client
+    ) -> None:
+        """
+        GIVEN a ticker identifier containing "/", "..", "?" and "="
+        WHEN the id triple is fetched through the public Client.ticker entry point
+        THEN the identifier is sent percent-encoded as a single path segment.
+        """
+        with pytest.raises(HTTPError):
+            _ = mock_client.ticker("AAPL/../x?y=1").id_triple
+        assert sent_paths == ["/api/v1/id/AAPL%2F..%2Fx%3Fy%3D1"]
+
+    def test_exchange_code_is_encoded(self, sent_paths: list[str], mock_client: Client) -> None:
+        with pytest.raises(HTTPError):
+            mock_client.kfinance_api_client.fetch_id_triple(
+                identifier="SPGI", exchange_code="NYSE#frag"
+            )
+        assert sent_paths == ["/api/v1/id/SPGI/exchange_code/NYSE%23frag"]
+
+    @pytest.mark.parametrize(
+        "call, expected_path",
+        [
+            pytest.param(
+                lambda c: c.fetch_ticker_geography_groups(
+                    country_iso_code="US/../../users", state_iso_code="permissions?x=1"
+                ),
+                "/api/v1/ticker_groups/geo/country/US%2F..%2F..%2Fusers/permissions%3Fx%3D1",
+                id="geography_groups",
+            ),
+            pytest.param(
+                lambda c: c.fetch_ticker_exchange_groups(exchange_code="NYSE/../x"),
+                "/api/v1/ticker_groups/exchange/NYSE%2F..%2Fx",
+                id="exchange_groups",
+            ),
+            pytest.param(
+                lambda c: c.fetch_ticker_combined(
+                    country_iso_code="US/x", simple_industry="a?b", exchange_code="c#d"
+                ),
+                "/api/v1/ticker_groups/filters/geo/us%2Fx/none/simple/a%3Fb/exchange/c%23d",
+                id="ticker_combined",
+            ),
+            pytest.param(
+                lambda c: c.fetch_ticker_from_industry_code(
+                    industry_code="10/../x", industry_classification=IndustryClassification.sic
+                ),
+                "/api/v1/ticker_groups/industry/sic/10%2F..%2Fx",
+                id="ticker_from_industry_code",
+            ),
+            pytest.param(
+                lambda c: c.fetch_company_from_industry_code(
+                    industry_code="10?x=1", industry_classification=IndustryClassification.gics
+                ),
+                "/api/v1/company_groups/industry/gics/10%3Fx%3D1",
+                id="company_from_industry_code",
+            ),
+            pytest.param(
+                lambda c: c.fetch_history(
+                    trading_item_id=1, start_date="2024-01-01/../x", end_date="2024-02-01?y=1"
+                ),
+                "/api/v1/pricing/1/2024-01-01%2F..%2Fx/2024-02-01%3Fy%3D1/none/adjusted",
+                id="history",
+            ),
+            pytest.param(
+                lambda c: c.fetch_mergers_for_company(
+                    company_id=1, start_date="2024-01-01/x", end_date="2024-02-01%2Fy"
+                ),
+                "/api/v1/mergers/1/2024-01-01%2Fx/2024-02-01%252Fy",
+                id="mergers_for_company",
+            ),
+        ],
+    )
+    def test_filter_and_date_segments_are_encoded(
+        self,
+        sent_paths: list[str],
+        mock_client: Client,
+        call: Callable[[KFinanceApiClient], Any],
+        expected_path: str,
+    ) -> None:
+        with pytest.raises(HTTPError):
+            call(mock_client.kfinance_api_client)
+        assert sent_paths == [expected_path]
+
+    def test_well_formed_values_are_unchanged(self) -> None:
+        client = build_mock_api_client()
+        client.fetch_id_triple(identifier="BRK.B", exchange_code="NYSE")
+        client.fetch.assert_called_once_with(f"{client.url_base}id/BRK.B/exchange_code/NYSE")
+
+    @pytest.mark.parametrize("identifier", [".", ".."])
+    def test_dot_segments_are_rejected(self, identifier: str) -> None:
+        client = build_mock_api_client()
+        with pytest.raises(ValueError, match="Invalid URL path segment"):
+            client.fetch_id_triple(identifier=identifier)
+        client.fetch.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "call, expected_path",
+        [
+            pytest.param(
+                lambda c: c.fetch_id_triple("../users/permissions"),
+                "/api/v1/id/..%2Fusers%2Fpermissions",
+                id="dot_dot_traversal",
+            ),
+            pytest.param(
+                lambda c: c.fetch_id_triple("SPGI?x=1"),
+                "/api/v1/id/SPGI%3Fx%3D1",
+                id="query_injection",
+            ),
+            pytest.param(
+                lambda c: c.fetch_ticker_combined(exchange_code="a/../b"),
+                "/api/v1/ticker_groups/filters/geo/none/none/simple/none/exchange/a%2F..%2Fb",
+                id="combined_exchange_code",
+            ),
+            pytest.param(
+                lambda c: c.fetch_price_chart(trading_item_id=1, start_date="../../users#"),
+                "/api/v1/price_chart/1/..%2F..%2Fusers%23/none/none/adjusted",
+                id="price_chart_date",
+            ),
+            pytest.param(
+                lambda c: c.fetch_market_caps_tevs_and_shares_outstanding(
+                    company_id=1, start_date="x?y=1"
+                ),
+                "/api/v1/market_cap/1/x%3Fy%3D1/none",
+                id="market_cap_date",
+            ),
+        ],
+    )
+    def test_request_stays_on_intended_route_without_query(
+        self,
+        requests_mock: Mocker,
+        mock_client: Client,
+        call: Callable[[KFinanceApiClient], Any],
+        expected_path: str,
+    ) -> None:
+        """
+        GIVEN caller-supplied segments containing "../", "?" or "#"
+        WHEN the request is sent
+        THEN it reaches the intended route prefix with no query string.
+        """
+        requests_mock.get(re.compile(r"https://kfinance\.kensho\.com/.*"), status_code=404)
+        with pytest.raises(HTTPError):
+            call(mock_client.kfinance_api_client)
+        sent = urlsplit(requests_mock.request_history[-1].url)
+        assert sent.path == expected_path
+        assert sent.query == ""
+
+
+class TestDateStringValidation:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param({"start_date": "../users/permissions"}, id="start_only"),
+            pytest.param({"end_date": "2024-01-01?x=1"}, id="end_only"),
+            pytest.param({"start_date": "2024-01-01", "end_date": "2024-13-01"}, id="bad_month"),
+            pytest.param({"start_date": "2024-1-1"}, id="unpadded"),
+        ],
+    )
+    def test_invalid_dates_are_rejected_before_fetch(self, kwargs: dict[str, str]) -> None:
+        """
+        GIVEN a malformed start or end date (even when only one is passed)
+        WHEN history, price_chart, market_cap, tev, or shares_outstanding is called
+        THEN a ValueError is raised and no request is made.
+        """
+        api_client = build_mock_api_client()
+        api_client.fetch_history = MagicMock()
+        api_client.fetch_price_chart = MagicMock()
+        api_client.fetch_market_caps_tevs_and_shares_outstanding = MagicMock()
+        trading_item = TradingItem(kfinance_api_client=api_client, trading_item_id=1)
+        company = Company(kfinance_api_client=api_client, company_id=1)
+
+        for method in (
+            trading_item.history,
+            trading_item.price_chart,
+            company.market_cap,
+            company.tev,
+            company.shares_outstanding,
+        ):
+            with pytest.raises(ValueError, match="Expected a date in format"):
+                method(**kwargs)
+
+        api_client.fetch_history.assert_not_called()
+        api_client.fetch_price_chart.assert_not_called()
+        api_client.fetch_market_caps_tevs_and_shares_outstanding.assert_not_called()
+
+    def test_valid_single_date_is_passed_through(self) -> None:
+        api_client = build_mock_api_client()
+        api_client.fetch_history = MagicMock()
+        TradingItem(kfinance_api_client=api_client, trading_item_id=1).history(
+            start_date="2024-01-01"
+        )
+        api_client.fetch_history.assert_called_once()
+        assert api_client.fetch_history.call_args.kwargs["start_date"] == "2024-01-01"
