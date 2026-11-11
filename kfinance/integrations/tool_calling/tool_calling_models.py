@@ -21,6 +21,17 @@ from kfinance.domains.companies.company_models import IdentificationTripleWithCo
 from kfinance.httpx_utils import KfinanceHttpxClient
 
 
+# Maximum number of items in list arguments (identifiers, ids) of a single tool call.
+MAX_TOOL_LIST_ARG_LENGTH = 50
+
+ItemT = TypeVar("ItemT")
+
+
+def dedupe_preserving_order(items: list[ItemT]) -> list[ItemT]:
+    """Remove duplicate items from a list while keeping the first occurrence order."""
+    return list(dict.fromkeys(items))
+
+
 def _sanitize_http_error(e: HTTPStatusError) -> str:
     """Return the response body from an HTTPStatusError."""
     return f"{e.response.status_code}: {e.response.text}"
@@ -150,7 +161,8 @@ class ToolArgsWithIdentifiers(BaseModel):
 
     identifiers: list[str] = Field(
         min_length=1,
-        description="The identifiers, which can be a list of ticker symbols, ISINs, CUSIPs, company names, or company_ids",
+        max_length=MAX_TOOL_LIST_ARG_LENGTH,
+        description=f"The identifiers, which can be a list of ticker symbols, ISINs, CUSIPs, company names, or company_ids (at most {MAX_TOOL_LIST_ARG_LENGTH})",
     )
 
     @field_validator("identifiers", mode="before")
@@ -168,11 +180,17 @@ class ToolArgsWithIdentifiers(BaseModel):
                     parsed = json.loads(v)
                     if isinstance(parsed, list):
                         return [str(item) for item in parsed]
-                except (json.JSONDecodeError, ValueError):
+                except (json.JSONDecodeError, ValueError, RecursionError):
                     pass
             # Bare string like "IBM" -> ["IBM"]
             return [v]
         return v
+
+    @field_validator("identifiers", mode="after")
+    @classmethod
+    def dedupe_identifiers(cls, v: list[str]) -> list[str]:
+        """Drop repeated identifiers so that each one is only fetched once."""
+        return dedupe_preserving_order(v)
 
 
 def convert_int_to_str(v: Any) -> Any:

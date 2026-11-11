@@ -8,6 +8,9 @@ from httpx import HTTPStatusError
 
 ResultKeyT = TypeVar("ResultKeyT", bound=Hashable)
 
+# Upper bound on the number of upstream requests a single batch may issue.
+MAX_BATCH_TASKS = 250
+
 
 @dataclass(kw_only=True)
 class AsyncTask(Generic[ResultKeyT]):
@@ -34,8 +37,12 @@ async def batch_execute_async_tasks(tasks: list[AsyncTask[ResultKeyT]]) -> None:
     """Execute a list of tasks in the with up to 10 parallel tasks.
 
     The results from the execution (result or error) are directly stored in the task.
+    Raises a ValueError if more than MAX_BATCH_TASKS tasks are passed in.
     """
-    tasks[0].func.__name__ if tasks else "none"
+    if len(tasks) > MAX_BATCH_TASKS:
+        raise ValueError(
+            f"Refusing to execute {len(tasks)} tasks in one batch (maximum is {MAX_BATCH_TASKS})."
+        )
 
     # Allow a maximum of 10 tasks to run at once.
     throttle = asyncio.Semaphore(10)

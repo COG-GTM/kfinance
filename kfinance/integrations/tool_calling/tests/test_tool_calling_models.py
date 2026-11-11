@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 from contextlib import nullcontext as does_not_raise
 from datetime import datetime
+import json
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -26,6 +27,7 @@ from kfinance.domains.companies.company_tools import (
     GetInfoFromIdentifiersResp,
 )
 from kfinance.integrations.tool_calling.tool_calling_models import (
+    MAX_TOOL_LIST_ARG_LENGTH,
     IdentifierInfoWithResult,
     ToolArgsWithIdentifiers,
     ToolRespWithIdInfoAndErrors,
@@ -57,6 +59,38 @@ class TestIdentifiersCoercion:
         # But an empty list should still fail.
         with pytest.raises(ValidationError):
             ToolArgsWithIdentifiers.model_validate({"identifiers": "[]"})
+
+    @pytest.mark.parametrize(
+        "input_val",
+        [
+            pytest.param(
+                [f"C_{i}" for i in range(MAX_TOOL_LIST_ARG_LENGTH + 1)], id="list too long"
+            ),
+            pytest.param(
+                json.dumps([f"C_{i}" for i in range(MAX_TOOL_LIST_ARG_LENGTH + 1)]),
+                id="stringified list too long",
+            ),
+        ],
+    )
+    def test_too_many_identifiers_raises(self, input_val: Any) -> None:
+        with pytest.raises(ValidationError):
+            ToolArgsWithIdentifiers.model_validate({"identifiers": input_val})
+
+    def test_max_identifiers_allowed(self) -> None:
+        identifiers = [f"C_{i}" for i in range(MAX_TOOL_LIST_ARG_LENGTH)]
+        result = ToolArgsWithIdentifiers.model_validate({"identifiers": identifiers})
+        assert result.identifiers == identifiers
+
+    def test_duplicate_identifiers_removed(self) -> None:
+        result = ToolArgsWithIdentifiers.model_validate(
+            {"identifiers": '["IBM", "AAPL", "IBM", "AAPL"]'}
+        )
+        assert result.identifiers == ["IBM", "AAPL"]
+
+    def test_deeply_nested_json_string_does_not_raise_recursion_error(self) -> None:
+        nested = "[" * 100_000 + "]" * 100_000
+        result = ToolArgsWithIdentifiers.model_validate({"identifiers": nested})
+        assert result.identifiers == [nested]
 
 
 class TestGetEndpointsFromToolCallsWithGrounding:

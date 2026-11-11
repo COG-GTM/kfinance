@@ -3,9 +3,13 @@ from textwrap import dedent
 from typing import Literal, Type
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from kfinance.async_batch_execution import AsyncTask, batch_execute_async_tasks
+from kfinance.async_batch_execution import (
+    MAX_BATCH_TASKS,
+    AsyncTask,
+    batch_execute_async_tasks,
+)
 from kfinance.client.id_resolution import unified_fetch_id_triples
 from kfinance.client.permission_models import Permission
 from kfinance.domains.rounds_of_funding.rounds_of_funding_models import (
@@ -18,10 +22,12 @@ from kfinance.domains.rounds_of_funding.rounds_of_funding_models import (
     RoundsOfFundingRole,
 )
 from kfinance.integrations.tool_calling.tool_calling_models import (
+    MAX_TOOL_LIST_ARG_LENGTH,
     KfinanceTool,
     ToolArgsWithIdentifiers,
     ToolRespWithErrors,
     ToolRespWithIdInfoAndErrors,
+    dedupe_preserving_order,
 )
 
 
@@ -148,8 +154,16 @@ class GetRoundsOfFundingFromIdentifiers(KfinanceTool):
 
 class GetRoundsOfFundingInfoFromTransactionIdsArgs(BaseModel):
     transaction_ids: list[int] = Field(
-        description="List of transaction IDs for rounds of funding.", min_length=1
+        description=f"List of transaction IDs for rounds of funding (at most {MAX_TOOL_LIST_ARG_LENGTH}).",
+        min_length=1,
+        max_length=MAX_TOOL_LIST_ARG_LENGTH,
     )
+
+    @field_validator("transaction_ids", mode="after")
+    @classmethod
+    def dedupe_transaction_ids(cls, v: list[int]) -> list[int]:
+        """Drop repeated ids so that each one is only fetched once."""
+        return dedupe_preserving_order(v)
 
 
 class GetRoundsOfFundingInfoFromTransactionIdsResp(ToolRespWithErrors):
@@ -402,7 +416,7 @@ async def get_rounds_of_funding_info_from_transaction_ids(
             ),
             result_key=transaction_id,
         )
-        for transaction_id in transaction_ids
+        for transaction_id in dedupe_preserving_order(transaction_ids)
     ]
 
     await batch_execute_async_tasks(tasks=tasks)
@@ -452,6 +466,13 @@ async def get_rounds_of_funding_info_from_transaction_ids(
                     result_key=investor_key,
                 )
             )
+
+    if len(advisor_tasks) > MAX_BATCH_TASKS:
+        errors.append(
+            f"Advisors were only fetched for the first {MAX_BATCH_TASKS} of "
+            f"{len(advisor_tasks)} participants."
+        )
+        advisor_tasks = advisor_tasks[:MAX_BATCH_TASKS]
 
     await batch_execute_async_tasks(tasks=advisor_tasks)
 
@@ -540,10 +561,31 @@ async def get_funding_summary_from_identifiers(
         else:
             rounds_of_funding_responses[task.result_key] = task.result
 
-    all_transaction_ids = []
-    for response in rounds_of_funding_responses.values():
-        transaction_ids = [r.transaction_id for r in response.rounds_of_funding]
-        all_transaction_ids.extend(transaction_ids)
+    all_transaction_ids = dedupe_preserving_order(
+        [
+            r.transaction_id
+            for response in rounds_of_funding_responses.values()
+            for r in response.rounds_of_funding
+        ]
+    )
+    if len(all_transaction_ids) > MAX_BATCH_TASKS:
+        # Keep each company's most recent rounds, which carry the cumulative amount raised.
+        rounds_per_company = max(1, MAX_BATCH_TASKS // len(rounds_of_funding_responses))
+        all_transaction_ids = dedupe_preserving_order(
+            [
+                r.transaction_id
+                for response in rounds_of_funding_responses.values()
+                for r in sorted(
+                    response.rounds_of_funding,
+                    key=lambda r: r.closed_date or date.min,
+                    reverse=True,
+                )[:rounds_per_company]
+            ]
+        )[:MAX_BATCH_TASKS]
+        errors.append(
+            f"Round details were only fetched for the {rounds_per_company} most recent "
+            "rounds of each company."
+        )
 
     detail_tasks: list[AsyncTask[int]] = [
         AsyncTask(

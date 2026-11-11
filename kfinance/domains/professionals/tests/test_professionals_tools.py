@@ -1,4 +1,5 @@
 import httpx
+from pydantic import ValidationError
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -14,11 +15,13 @@ from kfinance.domains.professionals.professionals_models import (
 )
 from kfinance.domains.professionals.professionals_tools import (
     GetProfessionalsFromIdentifiersResp,
+    GetProfessionalsFromPersonIdsArgs,
     fetch_professionals_company,
     fetch_professionals_person,
     get_professionals_from_identifiers,
     get_professionals_from_person_ids,
 )
+from kfinance.integrations.tool_calling.tool_calling_models import MAX_TOOL_LIST_ARG_LENGTH
 
 
 SPGI_BOARD_MEMBER = CompanyProfessional(
@@ -393,6 +396,42 @@ class TestGetProfessionalsFromIdentifiers:
 
 
 class TestGetProfessionalsFromPersonIds:
+    def test_person_ids_max_length(self) -> None:
+        """
+        WHEN more than MAX_TOOL_LIST_ARG_LENGTH person_ids are passed
+        THEN argument validation fails before any request is sent
+        """
+        GetProfessionalsFromPersonIdsArgs.model_validate(
+            {"person_ids": list(range(MAX_TOOL_LIST_ARG_LENGTH))}
+        )
+        with pytest.raises(ValidationError):
+            GetProfessionalsFromPersonIdsArgs.model_validate(
+                {"person_ids": list(range(MAX_TOOL_LIST_ARG_LENGTH + 1))}
+            )
+
+    def test_person_ids_deduped(self) -> None:
+        args = GetProfessionalsFromPersonIdsArgs.model_validate({"person_ids": [2, 1, 2, 1]})
+        assert args.person_ids == [2, 1]
+
+    @pytest.mark.asyncio
+    async def test_repeated_person_id_fetched_once(
+        self,
+        httpx_client: httpx.AsyncClient,
+        httpx_mock: HTTPXMock,
+        add_spgi_person_mock_resp: None,
+    ) -> None:
+        """
+        WHEN the same person_id is repeated many times
+        THEN the person is only requested once
+        """
+        resp = await get_professionals_from_person_ids(
+            person_ids=[SPGI_CEO_PERSON_ID] * 10_000,
+            httpx_client=httpx_client,
+        )
+        assert resp.errors == []
+        assert list(resp.results) == [str(SPGI_CEO_PERSON_ID)]
+        assert len(httpx_mock.get_requests()) == 1
+
     @pytest.mark.asyncio
     async def test_get_person_professionals(
         self, httpx_client: httpx.AsyncClient, add_spgi_person_mock_resp: None
