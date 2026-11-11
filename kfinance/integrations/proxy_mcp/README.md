@@ -25,6 +25,9 @@ All configuration is via environment variables (powered by pydantic-settings).
 | `AUTH_OKTA_HOST` | No | `https://kensho.okta.com` | Okta host URL |
 | `AUTH_REFRESH_TOKEN` | Yes* | — | Refresh token for obtaining access tokens (local dev fallback) |
 | `AUTH_REFRESH_URL` | No | `https://kfinance.kensho.com/oauth2/refresh` | Token refresh endpoint |
+| `INBOUND_TOKEN` | Yes | — | Pre-shared token MCP clients must send as `Authorization: Bearer <token>` |
+| `INBOUND_ALLOWED_ORIGINS` | No | `[]` | JSON list of browser origins allowed to call the proxy, e.g. `["https://console.example.com"]`. `*` is rejected |
+| `INBOUND_ALLOWED_HOSTS` | No | loopback names for a loopback `--host` | JSON list of `Host` header names the proxy answers to, e.g. `["mcp-proxy.internal"]`. Set this when binding to a non-loopback `--host`. `*` is rejected |
 
 *Either both `AUTH_CLIENT_ID` and `AUTH_PRIVATE_KEY`, or `AUTH_REFRESH_TOKEN` must be set.
 
@@ -51,11 +54,14 @@ export AUTH_PRIVATE_KEY="your-private-key"
 
 ## Running
 
+Generate a token that MCP clients will use to authenticate to the proxy:
+
 ```bash
-python -m kfinance.proxy_mcp --host 127.0.0.1 --port 8000
+export INBOUND_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+python -m kfinance.integrations.proxy_mcp.proxy_mcp --host 127.0.0.1 --port 8000
 ```
 
-The server starts on `http://127.0.0.1:8000/mcp` using streamable-http transport.
+The server starts on `http://127.0.0.1:8000/mcp` using streamable-http transport. It refuses to start without `INBOUND_TOKEN`.
 
 Once the server is running, you can test it with the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector):
 
@@ -63,7 +69,7 @@ Once the server is running, you can test it with the [MCP Inspector](https://mod
 npx @modelcontextprotocol/inspector
 ```
 
-In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport type "Streamable HTTP".
+In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport type "Streamable HTTP" and add the header `Authorization: Bearer $INBOUND_TOKEN`. If you use the inspector's browser UI to connect directly (not via its local proxy), add its origin to `INBOUND_ALLOWED_ORIGINS`.
 
 | CLI Option | Default | Description |
 |-----------|---------|-------------|
@@ -72,18 +78,23 @@ In the inspector, connect using URL `http://127.0.0.1:8000/mcp` with transport t
 
 ## Client Authentication
 
-This skeleton does not authenticate incoming requests from MCP clients. Any client that can reach the proxy can use it. For a production deployment, you would need to add one of the following:
+The proxy uses the operator's kfinance credentials for every forwarded request, so it only serves authenticated callers:
 
-- **OAuth 2.0 Proxy** — The proxy runs its own OAuth flow (e.g., via FastMCP's built-in `OAuthProxy`). Clients register, get redirected to an IdP like Okta, and receive scoped tokens. 
-- **JWT Validation** — Clients bring their own IdP-issued tokens. The proxy validates them against the IdP's JWKS endpoint (FastMCP provides `JWTVerifier` for this). Simpler than a full OAuth flow but requires clients to obtain tokens independently.
-- **API Key / Static Token** — The proxy checks for a pre-shared secret in request headers. Simple and appropriate for internal services or controlled partner integrations.
-- **Network-Level Trust** — No application-layer auth. The proxy is deployed behind a VPN, service mesh (e.g., Istio with mTLS), or internal load balancer so that only trusted services can reach it.
+- Every request except `GET /health` must carry `Authorization: Bearer $INBOUND_TOKEN`; otherwise the proxy returns `401`.
+- Any request with an `Origin` header that is not listed in `INBOUND_ALLOWED_ORIGINS` gets a `403`, so web pages the operator visits (including DNS-rebinding attempts) cannot drive the proxy.
+- Any request whose `Host` header is not an allowed host name gets a `421`. With a loopback `--host` (the default) only `localhost`, `127.0.0.1` and `::1` are accepted, which blocks DNS-rebinding pages even when they send no `Origin`. With a non-loopback `--host`, set `INBOUND_ALLOWED_HOSTS`; without it the Host header is not checked and a warning is logged.
+- CORS is off unless `INBOUND_ALLOWED_ORIGINS` is set. When it is set, only those origins get CORS headers, credentials (cookies) are never allowed, and only the MCP methods and headers are permitted.
+
+The static token suits local use and controlled internal deployments. For multi-user production deployments, replace it with per-client identity, for example:
+
+- **OAuth 2.0 Proxy** — The proxy runs its own OAuth flow (e.g., via FastMCP's built-in `OAuthProxy`). Clients register, get redirected to an IdP like Okta, and receive scoped tokens.
+- **JWT Validation** — Clients bring their own IdP-issued tokens. The proxy validates them against the IdP's JWKS endpoint (FastMCP provides `JWTVerifier` for this).
+- **Network-Level Trust** — In addition to the above, deploy behind a VPN, service mesh (e.g., Istio with mTLS), or internal load balancer so that only trusted services can reach it. Binding to a non-loopback `--host` logs a warning.
 
 ## Production Considerations
 
 Beyond client authentication, a production deployment would additionally need:
 
-- CORS configuration tuned to specific origins
 - A more comprehensive health check (the current `GET /health` stub does not verify backend connectivity or token validity)
 - Sentry or equivalent error tracking
 - Redis for shared OAuth client state across replicas (if using OAuth proxy)

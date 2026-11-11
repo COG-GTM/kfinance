@@ -14,6 +14,11 @@ from kfinance.integrations.proxy_mcp.auth import (
     PrivateKeyBasedAccessTokenDispenser,
     RefreshTokenDispenser,
 )
+from kfinance.integrations.proxy_mcp.security import (
+    LOOPBACK_HOSTS,
+    InboundAccessMiddleware,
+    is_loopback,
+)
 from kfinance.integrations.proxy_mcp.settings import settings
 
 
@@ -60,19 +65,54 @@ def build_proxy() -> FastMCPProxy:
     return FastMCPProxy(client_factory=client_factory, name="Kfinance Proxy")
 
 
-def create_app() -> FastAPI:
+def _allowed_hosts(bind_host: str) -> list[str]:
+    """Host header names to accept: configured ones, else loopback names for a loopback bind."""
+    if settings.inbound.allowed_hosts:
+        return settings.inbound.allowed_hosts
+    if is_loopback(bind_host):
+        return sorted(LOOPBACK_HOSTS)
+    logger.warning(
+        "INBOUND_ALLOWED_HOSTS is not set for non-loopback host %s; the Host header is not "
+        "checked, so DNS-rebinding requests are only stopped by INBOUND_TOKEN.",
+        bind_host,
+    )
+    return []
+
+
+def create_app(bind_host: str = "127.0.0.1") -> FastAPI:
     """Create the FastAPI application wrapping the MCP proxy."""
+    if settings.inbound.token is None or not settings.inbound.token.get_secret_value():
+        raise ValueError(
+            "INBOUND_TOKEN must be set. Callers must present it as a Bearer token, otherwise "
+            "anyone who can reach the proxy could use the operator's kfinance credentials."
+        )
+
     proxy = build_proxy()
     mcp_http_app = proxy.http_app(path="/mcp", transport="streamable-http")
 
     app = FastAPI(lifespan=mcp_http_app.lifespan)
     app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        InboundAccessMiddleware,
+        token=settings.inbound.token.get_secret_value(),
+        allowed_origins=settings.inbound.allowed_origins,
+        allowed_hosts=_allowed_hosts(bind_host),
     )
+    if settings.inbound.allowed_origins:
+        # Added last so it is outermost: answers preflights and annotates 401s for allowed origins.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.inbound.allowed_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=[
+                "Authorization",
+                "Content-Type",
+                "Last-Event-ID",
+                "Mcp-Protocol-Version",
+                "Mcp-Session-Id",
+            ],
+            expose_headers=["Mcp-Session-Id"],
+        )
 
     @app.get("/health")
     async def health() -> dict:
@@ -88,7 +128,13 @@ def create_app() -> FastAPI:
 @click.option("--port", default=8000, type=int, help="Port to bind to")
 def run_proxy_mcp(host: str, port: int) -> None:
     """Run the proxy MCP server."""
-    app = create_app()
+    app = create_app(bind_host=host)
+    if not is_loopback(host):
+        logger.warning(
+            "Proxy is bound to non-loopback host %s; anyone holding INBOUND_TOKEN on that "
+            "network can use the operator's kfinance credentials.",
+            host,
+        )
 
     logger.info("Proxy server starting on %s:%s", host, port)
     uvicorn.run(app, host=host, port=port)

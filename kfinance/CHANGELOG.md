@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+- Proxy MCP: require a pre-shared `INBOUND_TOKEN` Bearer token on every request except
+  `GET /health`, reject requests from browser origins not listed in `INBOUND_ALLOWED_ORIGINS`,
+  and replace the wildcard credentialed CORS policy with an explicit, credential-less allowlist.
+- Proxy MCP: reject requests whose `Host` header is not an allowed host name (loopback names by
+  default for a loopback bind, `INBOUND_ALLOWED_HOSTS` otherwise) to block DNS rebinding.
+
 ## v7.1.2
 - Fix swapped `dataitemid`/`spgi_name` for `gain_from_sale_of_assets` and
   `gain_from_sale_of_investments` line item metadata.
