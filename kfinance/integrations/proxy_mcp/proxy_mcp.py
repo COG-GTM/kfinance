@@ -1,5 +1,3 @@
-from ipaddress import ip_address
-
 import click
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +14,11 @@ from kfinance.integrations.proxy_mcp.auth import (
     PrivateKeyBasedAccessTokenDispenser,
     RefreshTokenDispenser,
 )
-from kfinance.integrations.proxy_mcp.security import InboundAccessMiddleware
+from kfinance.integrations.proxy_mcp.security import (
+    LOOPBACK_HOSTS,
+    InboundAccessMiddleware,
+    is_loopback,
+)
 from kfinance.integrations.proxy_mcp.settings import settings
 
 
@@ -63,7 +65,21 @@ def build_proxy() -> FastMCPProxy:
     return FastMCPProxy(client_factory=client_factory, name="Kfinance Proxy")
 
 
-def create_app() -> FastAPI:
+def _allowed_hosts(bind_host: str) -> list[str]:
+    """Host header names to accept: configured ones, else loopback names for a loopback bind."""
+    if settings.inbound.allowed_hosts:
+        return settings.inbound.allowed_hosts
+    if is_loopback(bind_host):
+        return sorted(LOOPBACK_HOSTS)
+    logger.warning(
+        "INBOUND_ALLOWED_HOSTS is not set for non-loopback host %s; the Host header is not "
+        "checked, so DNS-rebinding requests are only stopped by INBOUND_TOKEN.",
+        bind_host,
+    )
+    return []
+
+
+def create_app(bind_host: str = "127.0.0.1") -> FastAPI:
     """Create the FastAPI application wrapping the MCP proxy."""
     if settings.inbound.token is None or not settings.inbound.token.get_secret_value():
         raise ValueError(
@@ -79,6 +95,7 @@ def create_app() -> FastAPI:
         InboundAccessMiddleware,
         token=settings.inbound.token.get_secret_value(),
         allowed_origins=settings.inbound.allowed_origins,
+        allowed_hosts=_allowed_hosts(bind_host),
     )
     if settings.inbound.allowed_origins:
         # Added last so it is outermost: answers preflights and annotates 401s for allowed origins.
@@ -106,22 +123,13 @@ def create_app() -> FastAPI:
     return app
 
 
-def _is_loopback(host: str) -> bool:
-    if host == "localhost":
-        return True
-    try:
-        return ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
 @click.command()
 @click.option("--host", default="127.0.0.1", help="Host to bind to")
 @click.option("--port", default=8000, type=int, help="Port to bind to")
 def run_proxy_mcp(host: str, port: int) -> None:
     """Run the proxy MCP server."""
-    app = create_app()
-    if not _is_loopback(host):
+    app = create_app(bind_host=host)
+    if not is_loopback(host):
         logger.warning(
             "Proxy is bound to non-loopback host %s; anyone holding INBOUND_TOKEN on that "
             "network can use the operator's kfinance credentials.",

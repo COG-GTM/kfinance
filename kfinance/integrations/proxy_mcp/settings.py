@@ -15,6 +15,7 @@ class InboundSettings(BaseModel):
 
     token: SecretStr | None = None
     allowed_origins: list[str] = []
+    allowed_hosts: list[str] = []
 
     @field_validator("allowed_origins")
     @classmethod
@@ -23,6 +24,14 @@ class InboundSettings(BaseModel):
         if "*" in origins:
             raise ValueError("INBOUND_ALLOWED_ORIGINS must list explicit origins, not '*'")
         return origins
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def reject_wildcard_host(cls, hosts: list[str]) -> list[str]:
+        """Disallow "*" so that the Host check cannot be silently disabled."""
+        if "*" in hosts:
+            raise ValueError("INBOUND_ALLOWED_HOSTS must list explicit host names, not '*'")
+        return hosts
 
 
 class Settings(BaseSettings):

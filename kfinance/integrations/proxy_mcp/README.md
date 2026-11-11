@@ -27,6 +27,7 @@ All configuration is via environment variables (powered by pydantic-settings).
 | `AUTH_REFRESH_URL` | No | `https://kfinance.kensho.com/oauth2/refresh` | Token refresh endpoint |
 | `INBOUND_TOKEN` | Yes | — | Pre-shared token MCP clients must send as `Authorization: Bearer <token>` |
 | `INBOUND_ALLOWED_ORIGINS` | No | `[]` | JSON list of browser origins allowed to call the proxy, e.g. `["https://console.example.com"]`. `*` is rejected |
+| `INBOUND_ALLOWED_HOSTS` | No | loopback names for a loopback `--host` | JSON list of `Host` header names the proxy answers to, e.g. `["mcp-proxy.internal"]`. Set this when binding to a non-loopback `--host`. `*` is rejected |
 
 *Either both `AUTH_CLIENT_ID` and `AUTH_PRIVATE_KEY`, or `AUTH_REFRESH_TOKEN` must be set.
 
@@ -81,6 +82,7 @@ The proxy uses the operator's kfinance credentials for every forwarded request, 
 
 - Every request except `GET /health` must carry `Authorization: Bearer $INBOUND_TOKEN`; otherwise the proxy returns `401`.
 - Any request with an `Origin` header that is not listed in `INBOUND_ALLOWED_ORIGINS` gets a `403`, so web pages the operator visits (including DNS-rebinding attempts) cannot drive the proxy.
+- Any request whose `Host` header is not an allowed host name gets a `421`. With a loopback `--host` (the default) only `localhost`, `127.0.0.1` and `::1` are accepted, which blocks DNS-rebinding pages even when they send no `Origin`. With a non-loopback `--host`, set `INBOUND_ALLOWED_HOSTS`; without it the Host header is not checked and a warning is logged.
 - CORS is off unless `INBOUND_ALLOWED_ORIGINS` is set. When it is set, only those origins get CORS headers, credentials (cookies) are never allowed, and only the MCP methods and headers are permitted.
 
 The static token suits local use and controlled internal deployments. For multi-user production deployments, replace it with per-client identity, for example:
