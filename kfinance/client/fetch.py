@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 import logging
+import re
 from time import time
 from typing import Any, Callable, Generator, Optional
 from urllib.parse import quote
@@ -99,6 +100,8 @@ def validate_optional_date_str(value: Optional[str], param_name: str) -> None:
     if value is None:
         return
     try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise ValueError
         datetime.strptime(value, "%Y-%m-%d")
     except (TypeError, ValueError):
         raise ValueError(

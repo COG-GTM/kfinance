@@ -934,6 +934,7 @@ class TestDateStringValidation:
             pytest.param({"start_date": "../users/permissions"}, id="start_only"),
             pytest.param({"end_date": "2024-01-01?x=1"}, id="end_only"),
             pytest.param({"start_date": "2024-01-01", "end_date": "2024-13-01"}, id="bad_month"),
+            pytest.param({"start_date": "2024-1-1"}, id="unpadded"),
         ],
     )
     def test_invalid_dates_are_rejected_before_fetch(self, kwargs: dict[str, str]) -> None:
