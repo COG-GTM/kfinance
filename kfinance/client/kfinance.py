@@ -8,7 +8,7 @@ import logging
 import re
 from sys import stdout
 from typing import TYPE_CHECKING, Any, Callable, Iterable, NamedTuple, Optional, overload
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 import webbrowser
 
 from google.genai import types as gapic
@@ -38,7 +38,7 @@ from kfinance.client.models.date_and_period_models import (
     Periodicity,
     YearAndQuarter,
 )
-from kfinance.client.server_thread import ServerThread
+from kfinance.client.server_thread import ServerThread, origin_from_url
 from kfinance.domains.companies.company_models import IdentificationTriple
 from kfinance.domains.earnings.earning_models import EarningsCall, TranscriptComponent
 from kfinance.domains.mergers_and_acquisitions.merger_and_acquisition_models import (
@@ -1852,16 +1852,23 @@ class Client:
             )
         # method 3 automatic login getting a refresh token
         else:
-            server_thread = ServerThread()
+            login_host = api_host if api_host else DEFAULT_API_HOST
+            server_thread = ServerThread(allowed_origin=origin_from_url(login_host))
             stdout.write("Please login with your credentials.\n")
             server_thread.start()
             webbrowser.open(
                 urljoin(
-                    api_host if api_host else DEFAULT_API_HOST,
-                    f"automated_login?port={server_thread.server_port}",
+                    login_host,
+                    "automated_login?"
+                    + urlencode({"port": server_thread.server_port, "state": server_thread.state}),
                 )
             )
             server_thread.join()
+            if server_thread.refresh_token is None:
+                raise TimeoutError(
+                    "Browser login did not complete within "
+                    f"{server_thread.login_timeout:g} seconds. Please try again."
+                )
             self.kfinance_api_client = KFinanceApiClient(
                 refresh_token=server_thread.refresh_token,
                 api_host=api_host,

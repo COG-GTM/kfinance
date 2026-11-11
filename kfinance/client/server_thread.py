@@ -1,62 +1,173 @@
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from functools import partial
+from hmac import compare_digest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-from threading import Thread
+from secrets import token_urlsafe
+from threading import Lock, Thread
+from time import monotonic
+from typing import Any
+from urllib.parse import urlsplit
 
 
-refresh_token: str | None = None
+MAX_CONTENT_LENGTH = 64 * 1024
+REQUEST_TIMEOUT_SECONDS = 10
+LOGIN_TIMEOUT_SECONDS = 300
+POLL_INTERVAL_SECONDS = 1
+
+
+DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def origin_from_url(url: str) -> str:
+    """Return the scheme://host[:port] origin of a url, serialized the way browsers send it."""
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    if parts.port is not None and parts.port != DEFAULT_PORTS.get(scheme):
+        host = f"{host}:{parts.port}"
+    return f"{scheme}://{host}"
 
 
 class ServerThread(Thread):
-    def __init__(self, daemon: bool = True) -> None:
-        """Construct a thread to hold an HTTPServer and a custon HTTPRequestHandler."""
+    def __init__(
+        self,
+        allowed_origin: str,
+        daemon: bool = True,
+        login_timeout: float = LOGIN_TIMEOUT_SECONDS,
+    ) -> None:
+        """Construct a thread to hold an HTTPServer and a custom HTTPRequestHandler.
+
+        :param allowed_origin: The only browser origin allowed to post the refresh token.
+        :type allowed_origin: str
+        :param login_timeout: Seconds to wait for the login before giving up.
+        :type login_timeout: float
+        """
         Thread.__init__(self, daemon=daemon)
-        self.refresh_token = None
-        handler = WebRequestHandler(self)
+        self.refresh_token: str | None = None
+        self.allowed_origin = allowed_origin.lower()
+        self.login_timeout = login_timeout
+        self._token_lock = Lock()
+        self._accepting = True
+        # one-time value that the login page must echo back alongside the refresh token
+        self.state = token_urlsafe(32)
         # not actually binding on port 0, this will ask the kernel to bind to an unused port
-        self.server = HTTPServer(("127.0.0.1", 0), handler)
+        # each connection gets its own daemon thread so a slow or stalled client cannot hold the
+        # server and keep the login deadline from being checked
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), partial(WebRequestHandler, self))
+        self.server.block_on_close = False
+        # handle_request returns after this many idle seconds so the login deadline is checked
+        self.server.timeout = POLL_INTERVAL_SECONDS
         self.server_port = self.server.server_port
 
     def run(self) -> None:
-        """Run the server, but only until the refresh token is written to."""
-        while self.refresh_token is None:
-            self.server.handle_request()
+        """Run the server until a valid refresh token is written to or the login times out."""
+        deadline = monotonic() + self.login_timeout
+        try:
+            while self.refresh_token is None and monotonic() < deadline:
+                self.server.handle_request()
+        finally:
+            with self._token_lock:
+                self._accepting = False
+            self.server.server_close()
+
+    def accept_token(self, refresh_token: str) -> bool:
+        """Store the first valid refresh token while the login is still open."""
+        with self._token_lock:
+            if not self._accepting or self.refresh_token is not None:
+                return False
+            self.refresh_token = refresh_token
+            return True
 
 
-class WebRequestHandler(SimpleHTTPRequestHandler):
-    def __init__(self, thread: ServerThread):
+class WebRequestHandler(BaseHTTPRequestHandler):
+    timeout = REQUEST_TIMEOUT_SECONDS
+
+    def __init__(self, thread: ServerThread, *args: Any, **kwargs: Any) -> None:
         """Hold the thread itself in the handler, so the handler can set the refresh token."""
         self.thread = thread
-
-    def __call__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-        """Instead of letting the server construct the handler, just make the handler callable."""
         super().__init__(*args, **kwargs)
 
-    def end_headers(self) -> None:
-        """The headers you needs for a CORS check."""
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Credentials", "true")
-        self.send_header(
-            "Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept"
+    def _origin_allowed(self) -> bool:
+        origin = self.headers.get("Origin")
+        return origin is not None and compare_digest(
+            origin.lower().encode(), self.thread.allowed_origin.encode()
         )
-        self.send_header("Access-Control-Allow-Methods", "POST")
+
+    def _respond(self, status: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def end_headers(self) -> None:
+        """Add CORS headers, but only for the expected login origin."""
+        if self._origin_allowed():
+            self.send_header("Access-Control-Allow-Origin", self.thread.allowed_origin)
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Requested-With")
+            self.send_header("Access-Control-Allow-Methods", "POST")
+        self.send_header("Vary", "Origin")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-        return super(WebRequestHandler, self).end_headers()
+        super().end_headers()
 
     def do_OPTIONS(self) -> None:
-        """OPTIONS is needed for a preflight check, apparently."""
-        self.send_response(200)
-        self.end_headers()
+        """Answer the CORS preflight check for the expected login origin only."""
+        self._respond(204 if self._origin_allowed() else 403)
 
     def do_GET(self) -> None:
         """This should never come up, but don't serve files or anything regardless."""
-        self.send_response(200)
-        self.end_headers()
+        self._respond(200)
+
+    def do_HEAD(self) -> None:
+        """This should never come up, but don't serve files or anything regardless."""
+        self._respond(200)
 
     def do_POST(self) -> None:
-        """Receive the refresh token from the client webpage, which will shut off the server and the thread."""
-        content_length = int(self.headers["Content-Length"])
-        post_data = self.rfile.read(content_length)
-        post_dict = json.loads(post_data)
-        self.thread.refresh_token = post_dict["refresh_token"]
-        self.send_response(200)
-        self.end_headers()
+        """Receive the refresh token from the login webpage, which will shut off the server and the thread.
+
+        The request must come from the expected login origin and carry the one-time state value
+        that was put in the login URL. Anything else is rejected and the server keeps waiting.
+        """
+        if not self._origin_allowed():
+            self._respond(403)
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self._respond(411)
+            return
+        if content_length <= 0:
+            self._respond(400)
+            return
+        if content_length > MAX_CONTENT_LENGTH:
+            self._respond(413)
+            return
+
+        try:
+            post_data = self.rfile.read(content_length)
+        except TimeoutError:
+            self.close_connection = True
+            return
+        try:
+            post_dict = json.loads(post_data)
+        except ValueError:
+            self._respond(400)
+            return
+        if not isinstance(post_dict, dict):
+            self._respond(400)
+            return
+
+        state = post_dict.get("state")
+        if not isinstance(state, str) or not compare_digest(
+            state.encode(), self.thread.state.encode()
+        ):
+            self._respond(403)
+            return
+
+        refresh_token = post_dict.get("refresh_token")
+        if not isinstance(refresh_token, str) or not refresh_token:
+            self._respond(400)
+            return
+
+        self._respond(200 if self.thread.accept_token(refresh_token) else 409)
