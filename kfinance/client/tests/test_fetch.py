@@ -11,7 +11,7 @@ from requests_mock import Mocker
 
 from kfinance.client.fetch import KFinanceApiClient
 from kfinance.client.industry_models import IndustryClassification
-from kfinance.client.kfinance import Client
+from kfinance.client.kfinance import Client, Company, TradingItem
 from kfinance.client.models.date_and_period_models import EstimateType, Periodicity, PeriodType
 from kfinance.client.models.response_models import SingleResultResp
 from kfinance.conftest import SPGI_COMPANY_ID
@@ -874,3 +874,100 @@ class TestPathSegmentEncoding:
         with pytest.raises(ValueError, match="Invalid URL path segment"):
             client.fetch_id_triple(identifier=identifier)
         client.fetch.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "call, expected_path",
+        [
+            pytest.param(
+                lambda c: c.fetch_id_triple("../users/permissions"),
+                "/api/v1/id/..%2Fusers%2Fpermissions",
+                id="dot_dot_traversal",
+            ),
+            pytest.param(
+                lambda c: c.fetch_id_triple("SPGI?x=1"),
+                "/api/v1/id/SPGI%3Fx%3D1",
+                id="query_injection",
+            ),
+            pytest.param(
+                lambda c: c.fetch_ticker_combined(exchange_code="a/../b"),
+                "/api/v1/ticker_groups/filters/geo/none/none/simple/none/exchange/a%2F..%2Fb",
+                id="combined_exchange_code",
+            ),
+            pytest.param(
+                lambda c: c.fetch_price_chart(trading_item_id=1, start_date="../../users#"),
+                "/api/v1/price_chart/1/..%2F..%2Fusers%23/none/none/adjusted",
+                id="price_chart_date",
+            ),
+            pytest.param(
+                lambda c: c.fetch_market_caps_tevs_and_shares_outstanding(
+                    company_id=1, start_date="x?y=1"
+                ),
+                "/api/v1/market_cap/1/x%3Fy%3D1/none",
+                id="market_cap_date",
+            ),
+        ],
+    )
+    def test_request_stays_on_intended_route_without_query(
+        self,
+        requests_mock: Mocker,
+        mock_client: Client,
+        call: Callable[[KFinanceApiClient], Any],
+        expected_path: str,
+    ) -> None:
+        """
+        GIVEN caller-supplied segments containing "../", "?" or "#"
+        WHEN the request is sent
+        THEN it reaches the intended route prefix with no query string.
+        """
+        requests_mock.get(re.compile(r"https://kfinance\.kensho\.com/.*"), status_code=404)
+        with pytest.raises(HTTPError):
+            call(mock_client.kfinance_api_client)
+        sent = urlsplit(requests_mock.request_history[-1].url)
+        assert sent.path == expected_path
+        assert sent.query == ""
+
+
+class TestDateStringValidation:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param({"start_date": "../users/permissions"}, id="start_only"),
+            pytest.param({"end_date": "2024-01-01?x=1"}, id="end_only"),
+            pytest.param({"start_date": "2024-01-01", "end_date": "2024-13-01"}, id="bad_month"),
+        ],
+    )
+    def test_invalid_dates_are_rejected_before_fetch(self, kwargs: dict[str, str]) -> None:
+        """
+        GIVEN a malformed start or end date (even when only one is passed)
+        WHEN history, price_chart, market_cap, tev, or shares_outstanding is called
+        THEN a ValueError is raised and no request is made.
+        """
+        api_client = build_mock_api_client()
+        api_client.fetch_history = MagicMock()
+        api_client.fetch_price_chart = MagicMock()
+        api_client.fetch_market_caps_tevs_and_shares_outstanding = MagicMock()
+        trading_item = TradingItem(kfinance_api_client=api_client, trading_item_id=1)
+        company = Company(kfinance_api_client=api_client, company_id=1)
+
+        for method in (
+            trading_item.history,
+            trading_item.price_chart,
+            company.market_cap,
+            company.tev,
+            company.shares_outstanding,
+        ):
+            with pytest.raises(ValueError, match="Expected a date in format"):
+                method(**kwargs)
+
+        api_client.fetch_history.assert_not_called()
+        api_client.fetch_price_chart.assert_not_called()
+        api_client.fetch_market_caps_tevs_and_shares_outstanding.assert_not_called()
+
+    def test_valid_single_date_is_passed_through(self) -> None:
+        api_client = build_mock_api_client()
+        api_client.fetch_history = MagicMock()
+        TradingItem(kfinance_api_client=api_client, trading_item_id=1).history(
+            start_date="2024-01-01"
+        )
+        api_client.fetch_history.assert_called_once()
+        assert api_client.fetch_history.call_args.kwargs["start_date"] == "2024-01-01"

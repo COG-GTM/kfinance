@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import datetime
 import logging
 from time import time
 from typing import Any, Callable, Generator, Optional
@@ -91,6 +92,18 @@ def _path_segment(value: object) -> str:
     if segment in (".", ".."):
         raise ValueError(f"Invalid URL path segment: {value!r}")
     return segment
+
+
+def validate_optional_date_str(value: Optional[str], param_name: str) -> None:
+    """Raise a ValueError unless [value] is None or a "YYYY-MM-DD" date string."""
+    if value is None:
+        return
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        raise ValueError(
+            f'Invalid {param_name}: {value!r}. Expected a date in format "YYYY-MM-DD".'
+        ) from None
 
 
 class KFinanceApiClient:

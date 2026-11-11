@@ -7,7 +7,7 @@ from cachetools import LRUCache, cached
 import numpy as np
 import pandas as pd
 
-from kfinance.client.fetch import KFinanceApiClient
+from kfinance.client.fetch import KFinanceApiClient, validate_optional_date_str
 from kfinance.client.models.date_and_period_models import (
     EstimatePeriodType,
     EstimateType,
@@ -408,6 +408,8 @@ class CompanyFunctionsMetaClass:
         end_date: str | None,
     ) -> dict:
         """Helper function to fetch market cap, TEV, and shares outstanding."""
+        validate_optional_date_str(start_date, "start_date")
+        validate_optional_date_str(end_date, "end_date")
 
         capitalizations = self.kfinance_api_client.fetch_market_caps_tevs_and_shares_outstanding(
             company_id=self.company_id, start_date=start_date, end_date=end_date

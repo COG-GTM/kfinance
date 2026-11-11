@@ -23,6 +23,7 @@ from kfinance.client.fetch import (
     DEFAULT_OKTA_AUTH_SERVER,
     DEFAULT_OKTA_HOST,
     KFinanceApiClient,
+    validate_optional_date_str,
 )
 from kfinance.client.industry_models import IndustryClassification
 from kfinance.client.meta_classes import (
@@ -155,6 +156,8 @@ class TradingItem:
         :return: A PriceHistory containing historical price data including "open", "high", "low", "close", "volume" in type Money. The date value is a string that depends on the periodicity. If Periodicity.day, the Date index is the day in format "YYYY-MM-DD", eg "2024-05-13" If Periodicity.week, the Date index is the week number of the year in format "YYYY Week ##", eg "2024 Week 2" If Periodicity.month, the Date index is the month name of the year in format "<Month> YYYY", eg "January 2024". If Periodicity.year, the Date index is the year in format "YYYY", eg "2024".
         :rtype: PriceHistory
         """
+        validate_optional_date_str(start_date, "start_date")
+        validate_optional_date_str(end_date, "end_date")
         if start_date and end_date:
             if (
                 datetime.strptime(start_date, "%Y-%m-%d").date()
@@ -186,7 +189,8 @@ class TradingItem:
         :return: An image showing the price chart of the trading item
         :rtype: Image
         """
-
+        validate_optional_date_str(start_date, "start_date")
+        validate_optional_date_str(end_date, "end_date")
         content = self.kfinance_api_client.fetch_price_chart(
             trading_item_id=self.trading_item_id,
             is_adjusted=adjusted,
