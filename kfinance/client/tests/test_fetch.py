@@ -1,15 +1,20 @@
+import logging
+import traceback
 from unittest import TestCase
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import jwt
 from pydantic import ValidationError
 import pytest
+import requests
 from requests_mock import Mocker
 
+from kfinance.client.auth_errors import KfinanceAuthenticationError
 from kfinance.client.fetch import KFinanceApiClient
 from kfinance.client.kfinance import Client
 from kfinance.client.models.date_and_period_models import EstimateType, Periodicity, PeriodType
 from kfinance.client.models.response_models import SingleResultResp
-from kfinance.conftest import SPGI_COMPANY_ID
+from kfinance.conftest import SPGI_COMPANY_ID, format_logs_without_requests_mock
 from kfinance.domains.business_relationships.business_relationship_models import (
     BusinessRelationshipType,
     RelationshipResponse,
@@ -760,3 +765,88 @@ class TestFetchIssuerRatings:
         assert "21719" in resp.results
         assert "21835" in resp.results
         assert resp.errors == {}
+
+
+class TestAccessTokenErrorsDoNotLeakCredentials:
+    refresh_token = "super-secret-refresh-token-value"
+    refresh_url = "https://kfinance.kensho.com/oauth2/refresh"
+
+    def test_refresh_token_sent_as_query_param(self, requests_mock: Mocker) -> None:
+        """
+        GIVEN a client authenticated with a refresh token
+        WHEN the access token gets refreshed successfully
+        THEN the refresh token is sent to the refresh endpoint and the access token returned.
+        """
+        access_token = jwt.encode(
+            {"exp": 4102444800}, "test-signing-key-of-at-least-32-bytes", algorithm="HS256"
+        )
+        requests_mock.get(self.refresh_url, json={"access_token": access_token})
+        client = KFinanceApiClient(refresh_token=self.refresh_token)
+        client.fetch_permissions = MagicMock(return_value={"permissions": []})
+
+        assert client.access_token == access_token
+        assert requests_mock.last_request.qs == {"refresh_token": [self.refresh_token]}
+
+    @pytest.mark.parametrize(
+        "mock_kwargs, expected_status_code",
+        [
+            pytest.param({"status_code": 503}, 503, id="server_error"),
+            pytest.param({"status_code": 429}, 429, id="rate_limited"),
+            pytest.param(
+                {
+                    "exc": requests.exceptions.ConnectionError(
+                        f"Max retries exceeded with url: /oauth2/refresh?refresh_token={refresh_token}"
+                    )
+                },
+                None,
+                id="connection_error",
+            ),
+        ],
+    )
+    def test_failed_refresh_does_not_leak_refresh_token(
+        self,
+        requests_mock: Mocker,
+        caplog: pytest.LogCaptureFixture,
+        mock_kwargs: dict,
+        expected_status_code: int | None,
+    ) -> None:
+        """
+        GIVEN a client authenticated with a refresh token
+        WHEN refreshing the access token fails
+        THEN the raised error, its traceback, and logs do not contain the refresh token.
+        """
+        requests_mock.get(self.refresh_url, **mock_kwargs)
+        client = KFinanceApiClient(refresh_token=self.refresh_token)
+
+        with caplog.at_level(logging.DEBUG), pytest.raises(KfinanceAuthenticationError) as e:
+            try:
+                _ = client.access_token
+            except KfinanceAuthenticationError:
+                logging.getLogger("kfinance").exception("Access token refresh failed")
+                raise
+
+        assert e.value.status_code == expected_status_code
+        assert self.refresh_token not in str(e.value)
+        assert self.refresh_token not in "".join(traceback.format_exception(e.value))
+        assert "Access token refresh failed" in caplog.text
+        assert self.refresh_token not in format_logs_without_requests_mock(caplog)
+
+    def test_failed_keypair_login_raises_sanitized_error(self, requests_mock: Mocker) -> None:
+        """
+        GIVEN a client authenticated with a key pair
+        WHEN fetching an access token from okta fails
+        THEN a KfinanceAuthenticationError with only the status code is raised.
+        """
+        client = KFinanceApiClient(client_id="client-id", private_key="private-key")
+        requests_mock.post(
+            f"{client.okta_host}/oauth2/{client.okta_auth_server}/v1/token", status_code=401
+        )
+
+        with (
+            patch("kfinance.client.fetch.jwt.encode", return_value="client-assertion"),
+            pytest.raises(KfinanceAuthenticationError, match=r"\(HTTP 401\)") as e,
+        ):
+            _ = client.access_token
+        assert e.value.status_code == 401
+        assert e.value.__cause__ is None
+        assert e.value.__suppress_context__

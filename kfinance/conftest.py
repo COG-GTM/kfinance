@@ -229,3 +229,12 @@ def add_spgi_supplier_mock_resp(httpx_mock: HTTPXMock) -> None:
         },
         is_reusable=True,
     )
+
+
+def format_logs_without_requests_mock(caplog: pytest.LogCaptureFixture) -> str:
+    """Return captured logs, excluding the requests_mock test double's own request logs."""
+    return "\n".join(
+        caplog.handler.format(record)
+        for record in caplog.records
+        if not record.name.startswith("requests_mock")
+    )
