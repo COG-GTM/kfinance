@@ -2,6 +2,7 @@ from functools import partial
 from http.client import HTTPConnection
 import json
 import socket
+import time
 from typing import Any
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
@@ -287,3 +288,34 @@ def test_client_browser_login_times_out() -> None:
     ):
         Client(api_host="https://api.example.com")
     api_client.assert_not_called()
+
+
+def test_dripping_connection_does_not_block_login_or_timeout() -> None:
+    thread = ServerThread(allowed_origin=LOGIN_ORIGIN, login_timeout=1.5)
+    thread.start()
+    drip = socket.create_connection(("127.0.0.1", thread.server_port), timeout=5)
+    try:
+        drip.sendall(b"POST / HTTP/1.1\r\n")
+        for _ in range(3):
+            drip.sendall(b"X-Drip: 1\r\n")
+            time.sleep(0.2)
+        payload = {"refresh_token": "alice", "state": thread.state}
+        assert _post(thread, payload) == 200
+        thread.join(timeout=5)
+        assert thread.refresh_token == "alice"
+
+        timed_out = ServerThread(allowed_origin=LOGIN_ORIGIN, login_timeout=0.5)
+        timed_out.start()
+        drip2 = socket.create_connection(("127.0.0.1", timed_out.server_port), timeout=5)
+        try:
+            drip2.sendall(b"POST / HTTP/1.1\r\n")
+            start = time.monotonic()
+            while timed_out.is_alive() and time.monotonic() - start < 5:
+                drip2.sendall(b"X-Drip: 1\r\n")
+                time.sleep(0.1)
+            assert not timed_out.is_alive()
+            assert timed_out.refresh_token is None
+        finally:
+            drip2.close()
+    finally:
+        drip.close()

@@ -1,9 +1,11 @@
+from functools import partial
 from hmac import compare_digest
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from secrets import token_urlsafe
 from threading import Thread
 from time import monotonic
+from typing import Any
 from urllib.parse import urlsplit
 
 
@@ -48,9 +50,11 @@ class ServerThread(Thread):
         self.login_timeout = login_timeout
         # one-time value that the login page must echo back alongside the refresh token
         self.state = token_urlsafe(32)
-        handler = WebRequestHandler(self)
         # not actually binding on port 0, this will ask the kernel to bind to an unused port
-        self.server = HTTPServer(("127.0.0.1", 0), handler)
+        # each connection gets its own daemon thread so a slow or stalled client cannot hold the
+        # server and keep the login deadline from being checked
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), partial(WebRequestHandler, self))
+        self.server.block_on_close = False
         # handle_request returns after this many idle seconds so the login deadline is checked
         self.server.timeout = POLL_INTERVAL_SECONDS
         self.server_port = self.server.server_port
@@ -68,12 +72,9 @@ class ServerThread(Thread):
 class WebRequestHandler(BaseHTTPRequestHandler):
     timeout = REQUEST_TIMEOUT_SECONDS
 
-    def __init__(self, thread: ServerThread):
+    def __init__(self, thread: ServerThread, *args: Any, **kwargs: Any) -> None:
         """Hold the thread itself in the handler, so the handler can set the refresh token."""
         self.thread = thread
-
-    def __call__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-        """Instead of letting the server construct the handler, just make the handler callable."""
         super().__init__(*args, **kwargs)
 
     def _origin_allowed(self) -> bool:
@@ -134,7 +135,6 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         try:
             post_data = self.rfile.read(content_length)
         except TimeoutError:
-            # a client that stalls mid-body must not hold the single-threaded server
             self.close_connection = True
             return
         try:
