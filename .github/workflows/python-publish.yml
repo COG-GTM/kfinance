@@ -47,7 +47,6 @@ jobs:
           name: python-package-distributions
           path: dist/
           if-no-files-found: error
-          retention-days: 7
 
   pypi-publish:
     name: upload release to PyPI
