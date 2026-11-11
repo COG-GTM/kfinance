@@ -40,6 +40,8 @@ export AUTH_REFRESH_TOKEN="your-refresh-token"
 
 Note that refresh tokens are short-lived and tied to a single user session. For production use cases, a key pair must be used instead.
 
+The refresh token is sent as the `refresh_token` query parameter of `AUTH_REFRESH_URL`. The proxy redacts it from the `httpx` request log, and a failed exchange raises an error that carries only the HTTP status code. Intermediaries that record full request URLs (e.g. an egress proxy's access log) can still see it.
+
 ### Option 2: Key Pair (required for production)
 
 Follow the guide at https://docs.kensho.com/llmreadyapi/python-library/kf-authentication#publicprivate-key to obtain a client ID and private key, then:

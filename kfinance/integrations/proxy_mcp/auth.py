@@ -7,6 +7,8 @@ from typing import Generator, Generic, TypeVar
 import httpx
 from jwt import decode as jwt_decode, encode
 
+from kfinance.client.refresh_token_redaction import install_refresh_token_log_filter
+
 
 T = TypeVar("T")
 
@@ -107,7 +109,11 @@ class ClientAccessTokenDispenser(ABC):
 
 
 class RefreshTokenDispenser(ClientAccessTokenDispenser):
-    """Exchanges a refresh token via GET {url}?refresh_token={token} -> {"access_token": "..."}."""
+    """Exchanges a refresh token via GET {url}?refresh_token={token} -> {"access_token": "..."}.
+
+    The refresh token is redacted from the httpx request log, and errors raised by the exchange
+    carry only the status code (never the request URL).
+    """
 
     def __init__(
         self,
@@ -121,13 +127,30 @@ class RefreshTokenDispenser(ClientAccessTokenDispenser):
         self._refresh_token = refresh_token
         self._refresh_url = refresh_url
         self._http_client = httpx.Client(timeout=60)
+        install_refresh_token_log_filter()
 
     def refresh_access_token(self) -> ClientAccessToken:
         """Exchange the refresh token for a new access token via HTTP GET."""
-        response = self._http_client.get(
-            f"{self._refresh_url}?refresh_token={self._refresh_token}",
-        )
-        response.raise_for_status()
+        try:
+            response = self._http_client.get(
+                self._refresh_url,
+                params={"refresh_token": self._refresh_token},
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # The original error message and request carry the full URL, which includes the
+            # refresh token. Re-raise with a request that has no query string.
+            request = httpx.Request(exc.request.method, self._refresh_url)
+            raise httpx.HTTPStatusError(
+                f"Refresh token exchange failed with HTTP status {exc.response.status_code}",
+                request=request,
+                response=httpx.Response(exc.response.status_code, request=request),
+            ) from None
+        except httpx.RequestError as exc:
+            raise type(exc)(
+                f"Refresh token exchange failed: {type(exc).__name__}",
+                request=httpx.Request(exc.request.method, self._refresh_url),
+            ) from None
         token = response.json()["access_token"]
         logger.info("Token acquired via refresh token exchange")
         return ClientAccessToken(token=token)
