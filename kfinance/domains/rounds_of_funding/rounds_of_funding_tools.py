@@ -3,9 +3,13 @@ from textwrap import dedent
 from typing import Literal, Type
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from kfinance.async_batch_execution import AsyncTask, batch_execute_async_tasks
+from kfinance.async_batch_execution import (
+    MAX_BATCH_TASKS,
+    AsyncTask,
+    batch_execute_async_tasks,
+)
 from kfinance.client.id_resolution import unified_fetch_id_triples
 from kfinance.client.permission_models import Permission
 from kfinance.domains.rounds_of_funding.rounds_of_funding_models import (
@@ -18,10 +22,12 @@ from kfinance.domains.rounds_of_funding.rounds_of_funding_models import (
     RoundsOfFundingRole,
 )
 from kfinance.integrations.tool_calling.tool_calling_models import (
+    MAX_TOOL_LIST_ARG_LENGTH,
     KfinanceTool,
     ToolArgsWithIdentifiers,
     ToolRespWithErrors,
     ToolRespWithIdInfoAndErrors,
+    dedupe_preserving_order,
 )
 
 
@@ -148,8 +154,16 @@ class GetRoundsOfFundingFromIdentifiers(KfinanceTool):
 
 class GetRoundsOfFundingInfoFromTransactionIdsArgs(BaseModel):
     transaction_ids: list[int] = Field(
-        description="List of transaction IDs for rounds of funding.", min_length=1
+        description=f"List of transaction IDs for rounds of funding (at most {MAX_TOOL_LIST_ARG_LENGTH}).",
+        min_length=1,
+        max_length=MAX_TOOL_LIST_ARG_LENGTH,
     )
+
+    @field_validator("transaction_ids", mode="after")
+    @classmethod
+    def dedupe_transaction_ids(cls, v: list[int]) -> list[int]:
+        """Drop repeated ids so that each one is only fetched once."""
+        return dedupe_preserving_order(v)
 
 
 class GetRoundsOfFundingInfoFromTransactionIdsResp(ToolRespWithErrors):
@@ -402,7 +416,7 @@ async def get_rounds_of_funding_info_from_transaction_ids(
             ),
             result_key=transaction_id,
         )
-        for transaction_id in transaction_ids
+        for transaction_id in dedupe_preserving_order(transaction_ids)
     ]
 
     await batch_execute_async_tasks(tasks=tasks)
@@ -452,6 +466,13 @@ async def get_rounds_of_funding_info_from_transaction_ids(
                     result_key=investor_key,
                 )
             )
+
+    if len(advisor_tasks) > MAX_BATCH_TASKS:
+        errors.append(
+            f"Advisors were only fetched for the first {MAX_BATCH_TASKS} of "
+            f"{len(advisor_tasks)} participants."
+        )
+        advisor_tasks = advisor_tasks[:MAX_BATCH_TASKS]
 
     await batch_execute_async_tasks(tasks=advisor_tasks)
 
@@ -507,6 +528,100 @@ async def fetch_advisors_for_company_investing_in_round_of_funding(
     return AdvisorsResp.model_validate(resp.json())
 
 
+async def fetch_round_details_for_funding_summaries(
+    rounds_of_funding_responses: dict[str, RoundsOfFundingResp],
+    httpx_client: httpx.AsyncClient,
+    errors: list[str],
+) -> dict[int, RoundOfFundingInfo]:
+    """Fetch round details for funding summaries with at most MAX_BATCH_TASKS requests.
+
+    If all rounds fit into the budget, every round is fetched. Otherwise, rounds are fetched
+    newest first in waves, and only for companies that do not have an aggregate_amount_raised
+    (the cumulative total) yet.
+    """
+    all_transaction_ids = dedupe_preserving_order(
+        [
+            r.transaction_id
+            for response in rounds_of_funding_responses.values()
+            for r in response.rounds_of_funding
+        ]
+    )
+    detailed_round_info_responses: dict[int, RoundOfFundingInfo] = dict()
+
+    async def fetch_details(transaction_ids: list[int]) -> None:
+        detail_tasks: list[AsyncTask[int]] = [
+            AsyncTask(
+                func=fetch_rounds_of_funding_info_from_transaction_id,
+                kwargs=dict(
+                    transaction_id=transaction_id,
+                    httpx_client=httpx_client,
+                ),
+                result_key=transaction_id,
+            )
+            for transaction_id in transaction_ids
+        ]
+        await batch_execute_async_tasks(tasks=detail_tasks)
+        for task in detail_tasks:
+            # Skip errors in individual detail fetches
+            if not task.error:
+                detailed_round_info_responses[task.result_key] = task.result
+
+    if len(all_transaction_ids) <= MAX_BATCH_TASKS:
+        await fetch_details(all_transaction_ids)
+        return detailed_round_info_responses
+
+    def has_total(response: RoundsOfFundingResp) -> bool:
+        return any(
+            r.transaction_id in detailed_round_info_responses
+            and detailed_round_info_responses[r.transaction_id].transaction.aggregate_amount_raised
+            is not None
+            for r in response.rounds_of_funding
+        )
+
+    # Newest first, as the most recent round with an aggregate_amount_raised holds the total.
+    unfetched_ids_by_company = [
+        (
+            response,
+            [
+                r.transaction_id
+                for r in sorted(
+                    response.rounds_of_funding,
+                    key=lambda r: r.closed_date or date.min,
+                    reverse=True,
+                )
+            ],
+        )
+        for response in rounds_of_funding_responses.values()
+    ]
+    budget = MAX_BATCH_TASKS
+    while budget > 0:
+        pending = [
+            unfetched_ids
+            for response, unfetched_ids in unfetched_ids_by_company
+            if unfetched_ids and not has_total(response)
+        ]
+        if not pending:
+            break
+        rounds_per_company = max(1, budget // len(pending))
+        wave: list[int] = []
+        for unfetched_ids in pending:
+            wave.extend(unfetched_ids[:rounds_per_company])
+            del unfetched_ids[:rounds_per_company]
+        wave = [
+            transaction_id
+            for transaction_id in dedupe_preserving_order(wave)
+            if transaction_id not in detailed_round_info_responses
+        ][:budget]
+        budget -= len(wave)
+        await fetch_details(wave)
+
+    errors.append(
+        f"Round details were only fetched for {len(detailed_round_info_responses)} of "
+        f"{len(all_transaction_ids)} rounds."
+    )
+    return detailed_round_info_responses
+
+
 async def get_funding_summary_from_identifiers(
     identifiers: list[str],
     httpx_client: httpx.AsyncClient,
@@ -540,32 +655,11 @@ async def get_funding_summary_from_identifiers(
         else:
             rounds_of_funding_responses[task.result_key] = task.result
 
-    all_transaction_ids = []
-    for response in rounds_of_funding_responses.values():
-        transaction_ids = [r.transaction_id for r in response.rounds_of_funding]
-        all_transaction_ids.extend(transaction_ids)
-
-    detail_tasks: list[AsyncTask[int]] = [
-        AsyncTask(
-            func=fetch_rounds_of_funding_info_from_transaction_id,
-            kwargs=dict(
-                transaction_id=transaction_id,
-                httpx_client=httpx_client,
-            ),
-            result_key=transaction_id,
-        )
-        for transaction_id in all_transaction_ids
-    ]
-
-    await batch_execute_async_tasks(tasks=detail_tasks)
-
-    detailed_round_info_responses: dict[int, RoundOfFundingInfo] = dict()
-    for task in detail_tasks:  # type: ignore[assignment]
-        if task.error:
-            # Skip errors in individual detail fetches
-            continue
-        else:
-            detailed_round_info_responses[task.result_key] = task.result  # type: ignore[index]
+    detailed_round_info_responses = await fetch_round_details_for_funding_summaries(
+        rounds_of_funding_responses=rounds_of_funding_responses,
+        httpx_client=httpx_client,
+        errors=errors,
+    )
 
     summaries = build_funding_summaries_from_rof_responses(
         rounds_of_funding_responses, detailed_round_info_responses

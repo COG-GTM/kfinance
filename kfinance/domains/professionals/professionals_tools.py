@@ -2,7 +2,7 @@ from textwrap import dedent
 from typing import Type
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from kfinance.async_batch_execution import AsyncTask, batch_execute_async_tasks
 from kfinance.client.id_resolution import unified_fetch_id_triples
@@ -16,10 +16,12 @@ from kfinance.domains.professionals.professionals_models import (
     Timeframe,
 )
 from kfinance.integrations.tool_calling.tool_calling_models import (
+    MAX_TOOL_LIST_ARG_LENGTH,
     KfinanceTool,
     ToolArgsWithIdentifiers,
     ToolRespWithErrors,
     ToolRespWithIdInfoAndErrors,
+    dedupe_preserving_order,
 )
 
 
@@ -81,7 +83,11 @@ class GetProfessionalsFromIdentifiers(KfinanceTool):
 
 
 class GetProfessionalsFromPersonIdsArgs(BaseModel):
-    person_ids: list[int] = Field(description="List of person_ids.", min_length=1)
+    person_ids: list[int] = Field(
+        description=f"List of person_ids (at most {MAX_TOOL_LIST_ARG_LENGTH}).",
+        min_length=1,
+        max_length=MAX_TOOL_LIST_ARG_LENGTH,
+    )
     include_compensation: bool = Field(
         default=False,
         description="If True, includes each person's compensation history (keyed by fiscal year) across all companies.",
@@ -90,6 +96,12 @@ class GetProfessionalsFromPersonIdsArgs(BaseModel):
         default=False,
         description="If True, includes each person's biography (career narrative, prior employers, industry experience, and typically education).",
     )
+
+    @field_validator("person_ids", mode="after")
+    @classmethod
+    def dedupe_person_ids(cls, v: list[int]) -> list[int]:
+        """Drop repeated ids so that each one is only fetched once."""
+        return dedupe_preserving_order(v)
 
 
 class GetProfessionalsFromPersonIdsResp(ToolRespWithErrors):
@@ -200,7 +212,7 @@ async def get_professionals_from_person_ids(
             kwargs=dict(person_id=person_id, httpx_client=httpx_client),
             result_key=str(person_id),
         )
-        for person_id in person_ids
+        for person_id in dedupe_preserving_order(person_ids)
     ]
 
     await batch_execute_async_tasks(tasks=tasks)

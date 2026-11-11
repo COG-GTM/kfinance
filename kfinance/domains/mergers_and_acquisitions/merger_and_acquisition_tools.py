@@ -3,7 +3,7 @@ from textwrap import dedent
 from typing import Type
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from kfinance.async_batch_execution import AsyncTask, batch_execute_async_tasks
 from kfinance.client.id_resolution import unified_fetch_id_triples
@@ -13,9 +13,11 @@ from kfinance.domains.mergers_and_acquisitions.merger_and_acquisition_models imp
     MergersResp,
 )
 from kfinance.integrations.tool_calling.tool_calling_models import (
+    MAX_TOOL_LIST_ARG_LENGTH,
     KfinanceTool,
     ToolArgsWithIdentifiers,
     ToolRespWithIdInfoAndErrors,
+    dedupe_preserving_order,
 )
 
 
@@ -83,13 +85,23 @@ class GetMergersFromIdentifiers(KfinanceTool):
 
 
 class GetMergersInfoFromTransactionIdsArgs(BaseModel):
-    transaction_ids: list[int] = Field(description="The IDs of the transactions.")
+    transaction_ids: list[int] = Field(
+        description=f"The IDs of the transactions (at most {MAX_TOOL_LIST_ARG_LENGTH}).",
+        min_length=1,
+        max_length=MAX_TOOL_LIST_ARG_LENGTH,
+    )
     include_advisors: bool = Field(
         default=False, description="Whether to include advisors for participants in the response"
     )
     include_comments: bool = Field(
         default=False, description="Whether to include transaction comments in the response"
     )
+
+    @field_validator("transaction_ids", mode="after")
+    @classmethod
+    def dedupe_transaction_ids(cls, v: list[int]) -> list[int]:
+        """Drop repeated ids so that each one is only fetched once."""
+        return dedupe_preserving_order(v)
 
 
 class GetMergersInfoFromTransactionIds(KfinanceTool):
@@ -206,7 +218,7 @@ async def get_mergers_info_from_transaction_ids(
     resp = await httpx_client.post(
         url="/mergers/info",
         json={
-            "transaction_ids": transaction_ids,
+            "transaction_ids": dedupe_preserving_order(transaction_ids),
             "include_advisors": include_advisors,
             "include_comments": include_comments,
         },

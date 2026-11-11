@@ -1,11 +1,19 @@
+from copy import deepcopy
 from decimal import Decimal
 
 import httpx
+from pydantic import ValidationError
 import pytest
 from pytest_httpx import HTTPXMock
 
+from kfinance.async_batch_execution import (
+    MAX_BATCH_TASKS,
+    AsyncTask,
+    batch_execute_async_tasks,
+)
 from kfinance.conftest import FAKE_COMPANY_1_ID_TRIPLE, FAKE_COMPANY_2_ID_TRIPLE, SPGI_ID_TRIPLE
 from kfinance.domains.companies.company_models import COMPANY_ID_PREFIX
+from kfinance.domains.rounds_of_funding import rounds_of_funding_tools
 from kfinance.domains.rounds_of_funding.rounds_of_funding_models import (
     AdvisorResp,
     CompanyIdAndNameWithAdvisors,
@@ -22,12 +30,14 @@ from kfinance.domains.rounds_of_funding.rounds_of_funding_models import (
 from kfinance.domains.rounds_of_funding.rounds_of_funding_tools import (
     GetFundingSummaryFromIdentifiersResp,
     GetRoundsOfFundingFromIdentifiersResp,
+    GetRoundsOfFundingInfoFromTransactionIdsArgs,
     GetRoundsOfFundingInfoFromTransactionIdsResp,
     fetch_rounds_of_funding_from_company_id,
     get_funding_summary_from_identifiers,
     get_rounds_of_funding_from_identifiers,
     get_rounds_of_funding_info_from_transaction_ids,
 )
+from kfinance.integrations.tool_calling.tool_calling_models import MAX_TOOL_LIST_ARG_LENGTH
 
 
 class TestRoundsOfFunding:
@@ -445,13 +455,12 @@ class TestRoundsOfFunding:
                 json=self.funding_summary_rounds_response,
             )
 
-        # Mock the detailed round info for the transaction (multiple times for multiple companies)
-        for _ in range(2):  # Two companies will make this call
-            httpx_mock.add_response(
-                method="GET",
-                url="https://kfinance.kensho.com/api/v1/fundinground/info/789012",
-                json=self.funding_round_response,
-            )
+        # Both companies share the same transaction, so its details are only fetched once.
+        httpx_mock.add_response(
+            method="GET",
+            url="https://kfinance.kensho.com/api/v1/fundinground/info/789012",
+            json=self.funding_round_response,
+        )
 
         expected_summary = FundingSummary(
             company_id=f"C_1",  # This will be the identifier, not the company_id
@@ -606,3 +615,179 @@ class TestRoundsOfFunding:
         )
 
         assert result == expected_result
+
+
+class TestRoundsOfFundingRequestBounds:
+    funding_round_response = TestRoundsOfFunding.funding_round_response
+
+    def test_transaction_ids_max_length(self) -> None:
+        """
+        WHEN more than MAX_TOOL_LIST_ARG_LENGTH transaction_ids are passed
+        THEN argument validation fails before any request is sent
+        """
+        GetRoundsOfFundingInfoFromTransactionIdsArgs.model_validate(
+            {"transaction_ids": list(range(MAX_TOOL_LIST_ARG_LENGTH))}
+        )
+        with pytest.raises(ValidationError):
+            GetRoundsOfFundingInfoFromTransactionIdsArgs.model_validate(
+                {"transaction_ids": list(range(MAX_TOOL_LIST_ARG_LENGTH + 1))}
+            )
+
+    def test_transaction_ids_deduped(self) -> None:
+        args = GetRoundsOfFundingInfoFromTransactionIdsArgs.model_validate(
+            {"transaction_ids": [3, 1, 3, 2, 1]}
+        )
+        assert args.transaction_ids == [3, 1, 2]
+
+    @pytest.mark.asyncio
+    async def test_repeated_transaction_id_fetched_once(
+        self, httpx_client: httpx.AsyncClient, httpx_mock: HTTPXMock
+    ) -> None:
+        """
+        WHEN the same transaction_id is repeated many times
+        THEN the round info and each advisor endpoint are only requested once
+        """
+        transaction_id = 111111
+        base_url = f"https://kfinance.kensho.com/api/v1/fundinground/info/{transaction_id}"
+        httpx_mock.add_response(method="GET", url=base_url, json=self.funding_round_response)
+        httpx_mock.add_response(
+            method="GET", url=f"{base_url}/advisors/target", json={"advisors": []}
+        )
+        for investor_id in (67890, 98765):
+            httpx_mock.add_response(
+                method="GET",
+                url=f"{base_url}/advisors/investor/{investor_id}",
+                json={"advisors": []},
+            )
+
+        result = await get_rounds_of_funding_info_from_transaction_ids(
+            transaction_ids=[transaction_id] * 10_000,
+            httpx_client=httpx_client,
+        )
+
+        assert list(result.results) == [transaction_id]
+        assert result.errors == []
+        assert len(httpx_mock.get_requests()) == 4
+
+    @pytest.mark.asyncio
+    async def test_advisor_requests_capped(
+        self,
+        httpx_client: httpx.AsyncClient,
+        httpx_mock: HTTPXMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """
+        WHEN a round has more participants than MAX_BATCH_TASKS
+        THEN only MAX_BATCH_TASKS advisor requests are sent and an error explains the cut
+        """
+        monkeypatch.setattr(rounds_of_funding_tools, "MAX_BATCH_TASKS", 2)
+        transaction_id = 111111
+        base_url = f"https://kfinance.kensho.com/api/v1/fundinground/info/{transaction_id}"
+        httpx_mock.add_response(method="GET", url=base_url, json=self.funding_round_response)
+        httpx_mock.add_response(
+            method="GET", url=f"{base_url}/advisors/target", json={"advisors": []}
+        )
+        httpx_mock.add_response(
+            method="GET", url=f"{base_url}/advisors/investor/67890", json={"advisors": []}
+        )
+
+        result = await get_rounds_of_funding_info_from_transaction_ids(
+            transaction_ids=[transaction_id], httpx_client=httpx_client
+        )
+
+        assert result.errors == ["Advisors were only fetched for the first 2 of 3 participants."]
+        assert len(httpx_mock.get_requests()) == 3
+
+    @pytest.mark.asyncio
+    async def test_funding_summary_detail_requests_capped(
+        self,
+        httpx_client: httpx.AsyncClient,
+        httpx_mock: HTTPXMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """
+        WHEN the resolved companies have more rounds than MAX_BATCH_TASKS
+        THEN round details are fetched newest first, only until each company has a total,
+            and at most MAX_BATCH_TASKS detail requests are sent
+        """
+        monkeypatch.setattr(rounds_of_funding_tools, "MAX_BATCH_TASKS", 3)
+
+        def rounds(*transaction_ids_and_dates: tuple[int, str | None]) -> dict:
+            return {
+                "rounds_of_funding": [
+                    {
+                        "transaction_id": transaction_id,
+                        "funding_round_notes": None,
+                        "closed_date": closed_date,
+                        "funding_type": "Series A",
+                    }
+                    for transaction_id, closed_date in transaction_ids_and_dates
+                ]
+            }
+
+        httpx_mock.add_response(
+            method="GET",
+            url="https://kfinance.kensho.com/api/v1/fundingrounds/target/1",
+            json=rounds((1, "2020-01-01"), (2, "2023-01-01"), (3, None)),
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://kfinance.kensho.com/api/v1/fundingrounds/target/2",
+            json=rounds((4, "2022-01-01")),
+        )
+        round_without_total = deepcopy(self.funding_round_response)
+        round_without_total["transaction"]["aggregate_amount_raised"] = None
+        # First wave: the most recent round of each company. Round 2 has no total.
+        httpx_mock.add_response(
+            method="GET",
+            url="https://kfinance.kensho.com/api/v1/fundinground/info/2",
+            json=round_without_total,
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://kfinance.kensho.com/api/v1/fundinground/info/4",
+            json=self.funding_round_response,
+        )
+        # Second wave: the next round of C_1, which still has no total. Round 3 is never fetched.
+        httpx_mock.add_response(
+            method="GET",
+            url="https://kfinance.kensho.com/api/v1/fundinground/info/1",
+            json=self.funding_round_response,
+        )
+
+        resp = await get_funding_summary_from_identifiers(
+            identifiers=["C_1", "C_2"], httpx_client=httpx_client
+        )
+
+        assert resp.errors == ["Round details were only fetched for 3 of 4 rounds."]
+        assert resp.identifier_results["C_1"].total_rounds == 3
+        assert resp.identifier_results["C_1"].total_capital_raised == 5000000.0
+        assert resp.identifier_results["C_2"].total_capital_raised == 5000000.0
+        detail_requests = sorted(
+            request.url.path
+            for request in httpx_mock.get_requests()
+            if "/fundinground/info/" in request.url.path
+        )
+        assert detail_requests == [
+            "/api/v1/fundinground/info/1",
+            "/api/v1/fundinground/info/2",
+            "/api/v1/fundinground/info/4",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_batch_execute_rejects_oversized_batches() -> None:
+    """
+    WHEN more than MAX_BATCH_TASKS tasks are passed to batch_execute_async_tasks
+    THEN it raises without running any task
+    """
+
+    calls = []
+
+    async def record() -> None:
+        calls.append(1)
+
+    tasks = [AsyncTask(func=record, result_key=i) for i in range(MAX_BATCH_TASKS + 1)]
+    with pytest.raises(ValueError, match="maximum is"):
+        await batch_execute_async_tasks(tasks=tasks)
+    assert calls == []

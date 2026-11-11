@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.1.3
+- Cap list arguments of tool calls (`identifiers`, `person_ids`, `transaction_ids`) at 50 items
+  and drop duplicates before requests are sent.
+- Cap the number of requests a single `batch_execute_async_tasks` call may send, and cap the
+  advisor and round-detail follow-up requests in the rounds of funding tools.
+- Treat deeply nested stringified JSON `identifiers` as a bare string instead of raising `RecursionError`.
+
 ## v7.1.2
 - Fix swapped `dataitemid`/`spgi_name` for `gain_from_sale_of_assets` and
   `gain_from_sale_of_investments` line item metadata.
