@@ -87,7 +87,9 @@ class TestRefreshTokenExchange:
 
         assert str(exc_info.value) == "Refresh token exchange failed with HTTP status 500"
         assert exc_info.value.request is None
-        assert exc_info.value.response is None
+        assert exc_info.value.response is not None
+        assert exc_info.value.response.status_code == 500
+        assert exc_info.value.response.url is None
         assert exc_info.value.__suppress_context__
 
     def test_refresh_token_not_in_connection_error(self, requests_mock: Mocker) -> None:

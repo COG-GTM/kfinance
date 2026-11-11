@@ -195,8 +195,11 @@ class KFinanceApiClient:
             # The original error message, request, and response all carry the full URL,
             # which includes the refresh token. Re-raise with the status code only.
             status_code = exc.response.status_code if exc.response is not None else None
+            redacted_response = requests.Response()
+            redacted_response.status_code = status_code  # type: ignore[assignment]
             raise requests.HTTPError(
-                f"Refresh token exchange failed with HTTP status {status_code}"
+                f"Refresh token exchange failed with HTTP status {status_code}",
+                response=redacted_response,
             ) from None
         except requests.RequestException as exc:
             raise type(exc)(f"Refresh token exchange failed: {type(exc).__name__}") from None
