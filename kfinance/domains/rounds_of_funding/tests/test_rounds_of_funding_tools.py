@@ -763,7 +763,16 @@ class TestRoundsOfFundingRequestBounds:
         assert resp.identifier_results["C_1"].total_rounds == 3
         assert resp.identifier_results["C_1"].total_capital_raised == 5000000.0
         assert resp.identifier_results["C_2"].total_capital_raised == 5000000.0
-        assert len(httpx_mock.get_requests()) == 5
+        detail_requests = [
+            request.url.path
+            for request in httpx_mock.get_requests()
+            if "/fundinground/info/" in request.url.path
+        ]
+        assert detail_requests == [
+            "/api/v1/fundinground/info/2",
+            "/api/v1/fundinground/info/4",
+            "/api/v1/fundinground/info/1",
+        ]
 
 
 @pytest.mark.asyncio
