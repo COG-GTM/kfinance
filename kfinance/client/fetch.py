@@ -17,6 +17,7 @@ from kfinance.client.models.date_and_period_models import (
 )
 from kfinance.client.models.response_models import PostResponse, SingleResultResp
 from kfinance.client.permission_models import Permission
+from kfinance.client.refresh_token_redaction import install_refresh_token_log_filter
 from kfinance.domains.business_relationships.business_relationship_models import (
     BusinessRelationshipType,
     RelationshipResponse,
@@ -113,6 +114,7 @@ class KFinanceApiClient:
         """
         if refresh_token is not None:
             self.refresh_token = refresh_token
+            install_refresh_token_log_filter()
             self._access_token_refresh_func: Callable[..., str] = (
                 self._get_access_token_via_refresh_token
             )
@@ -182,11 +184,22 @@ class KFinanceApiClient:
 
     def _get_access_token_via_refresh_token(self) -> str:
         """Get an access token via oauth by submitting a refresh token."""
-        response = requests.get(
-            f"{self.api_host}/oauth2/refresh?refresh_token={self.refresh_token}",
-            timeout=60,
-        )
-        response.raise_for_status()
+        try:
+            response = requests.get(
+                f"{self.api_host}/oauth2/refresh",
+                params={"refresh_token": self.refresh_token},
+                timeout=60,
+            )
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            # The original error message, request, and response all carry the full URL,
+            # which includes the refresh token. Re-raise with the status code only.
+            status_code = exc.response.status_code if exc.response is not None else None
+            raise requests.HTTPError(
+                f"Refresh token exchange failed with HTTP status {status_code}"
+            ) from None
+        except requests.RequestException as exc:
+            raise type(exc)(f"Refresh token exchange failed: {type(exc).__name__}") from None
         return response.json().get("access_token")
 
     def _get_access_token_via_keypair(self) -> str:
