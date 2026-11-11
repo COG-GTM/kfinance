@@ -1,0 +1,9 @@
+# Pinned build tooling for .github/workflows/python-publish.yml.
+# Installed directly, and also passed as PIP_CONSTRAINT so the isolated build
+# environment gets the same setuptools / setuptools-scm versions.
+# Kept current by Dependabot (.github/dependabot.yml).
+build==1.6.1
+packaging==26.3
+pyproject-hooks==1.3.3
+setuptools==84.2.1
+setuptools-scm==9.2.2
