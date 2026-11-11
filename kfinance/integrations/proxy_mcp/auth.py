@@ -7,6 +7,12 @@ from typing import Generator, Generic, TypeVar
 import httpx
 from jwt import decode as jwt_decode, encode
 
+from kfinance.client.auth_errors import (
+    KfinanceAuthenticationError,
+    describe_request_failure,
+    install_refresh_token_log_filter,
+)
+
 
 T = TypeVar("T")
 
@@ -107,7 +113,11 @@ class ClientAccessTokenDispenser(ABC):
 
 
 class RefreshTokenDispenser(ClientAccessTokenDispenser):
-    """Exchanges a refresh token via GET {url}?refresh_token={token} -> {"access_token": "..."}."""
+    """Exchanges a refresh token via GET {url}?refresh_token={token} -> {"access_token": "..."}.
+
+    Failures raise KfinanceAuthenticationError without the request URL, and the refresh token
+    is redacted from httpx request logs.
+    """
 
     def __init__(
         self,
@@ -121,13 +131,25 @@ class RefreshTokenDispenser(ClientAccessTokenDispenser):
         self._refresh_token = refresh_token
         self._refresh_url = refresh_url
         self._http_client = httpx.Client(timeout=60)
+        install_refresh_token_log_filter()
 
     def refresh_access_token(self) -> ClientAccessToken:
         """Exchange the refresh token for a new access token via HTTP GET."""
-        response = self._http_client.get(
-            f"{self._refresh_url}?refresh_token={self._refresh_token}",
-        )
-        response.raise_for_status()
+        try:
+            response = self._http_client.get(
+                self._refresh_url,
+                params={"refresh_token": self._refresh_token},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as e:
+            # httpx includes the full URL (and with it the refresh token) in
+            # HTTPStatusError messages, so raise a new error without the original text.
+            status_code = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
+            raise KfinanceAuthenticationError(
+                "Failed to refresh the kFinance access token with the refresh token "
+                f"({describe_request_failure(status_code, e)}).",
+                status_code=status_code,
+            ) from None
         token = response.json()["access_token"]
         logger.info("Token acquired via refresh token exchange")
         return ClientAccessToken(token=token)

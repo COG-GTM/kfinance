@@ -2,14 +2,25 @@ import asyncio
 import contextlib
 from contextlib import nullcontext as does_not_raise
 from datetime import datetime
+import logging
+import traceback
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from pydantic import BaseModel, ValidationError
 import pytest
 from pytest_httpx import HTTPXMock
+import requests
+from requests_mock import Mocker
 
+from kfinance.client.auth_errors import KfinanceAuthenticationError
 from kfinance.client.kfinance import Client
-from kfinance.conftest import SPGI_COMPANY_ID, SPGI_ID_TRIPLE, SPGI_TICKER
+from kfinance.conftest import (
+    SPGI_COMPANY_ID,
+    SPGI_ID_TRIPLE,
+    SPGI_TICKER,
+    format_logs_without_requests_mock,
+)
 from kfinance.domains.business_relationships.business_relationship_models import (
     BusinessRelationshipType,
 )
@@ -27,6 +38,7 @@ from kfinance.domains.companies.company_tools import (
 )
 from kfinance.integrations.tool_calling.tool_calling_models import (
     IdentifierInfoWithResult,
+    KfinanceToolError,
     ToolArgsWithIdentifiers,
     ToolRespWithIdInfoAndErrors,
     ValidQuarter,
@@ -257,3 +269,69 @@ class TestToolResp:
             identifier_results=identifier_results, identifier_info=identifier_info
         )
         assert expected_results == tool_resp.results
+
+
+class TestToolErrorsDoNotLeakRefreshToken:
+    refresh_token = "super-secret-refresh-token-value"
+
+    @pytest.mark.asyncio
+    async def test_failed_token_refresh_during_tool_call(
+        self, requests_mock: Mocker, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """
+        GIVEN a client authenticated with a refresh token
+        WHEN the token refresh endpoint returns a 503 during a tool call
+        THEN the tool error and logs do not contain the refresh token.
+        """
+        requests_mock.get("https://kfinance.kensho.com/oauth2/refresh", status_code=503)
+        tool = GetInfoFromIdentifiers(kfinance_client=Client(refresh_token=self.refresh_token))
+
+        with (
+            caplog.at_level(logging.DEBUG),
+            pytest.raises(KfinanceAuthenticationError) as e,
+        ):
+            try:
+                await tool.arun_without_langchain(identifiers=["SPGI"])
+            except KfinanceAuthenticationError:
+                logging.getLogger("kfinance").exception("Tool call failed")
+                raise
+
+        assert "503" in str(e.value)
+        assert self.refresh_token not in str(e.value)
+        assert self.refresh_token not in "".join(traceback.format_exception(e.value))
+        assert self.refresh_token not in format_logs_without_requests_mock(caplog)
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(
+                requests.HTTPError(
+                    f"503 Server Error for url: https://h/r?refresh_token={refresh_token}",
+                    response=MagicMock(status_code=503),
+                ),
+                id="http_error",
+            ),
+            pytest.param(
+                requests.ConnectionError(
+                    f"Max retries exceeded with url: ?refresh_token={refresh_token}"
+                ),
+                id="connection_error",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_requests_errors_are_sanitized(
+        self, mock_client: Client, error: requests.RequestException
+    ) -> None:
+        """
+        GIVEN a tool whose execution raises a requests exception with a URL in its message
+        WHEN the tool is run via arun_without_langchain or run_with_endpoint_tracking
+        THEN the raised error does not contain the original message.
+        """
+        tool = GetInfoFromIdentifiers(kfinance_client=mock_client)
+        with patch.object(GetInfoFromIdentifiers, "_arun", AsyncMock(side_effect=error)):
+            for run in (tool.arun_without_langchain, tool.run_with_endpoint_tracking):
+                with pytest.raises(KfinanceToolError) as e:
+                    await run(identifiers=["SPGI"])
+                assert self.refresh_token not in str(e.value)
+                assert e.value.__suppress_context__

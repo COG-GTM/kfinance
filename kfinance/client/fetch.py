@@ -8,6 +8,11 @@ from uuid import uuid4
 import jwt
 import requests
 
+from kfinance.client.auth_errors import (
+    KfinanceAuthenticationError,
+    describe_request_failure,
+    install_refresh_token_log_filter,
+)
 from kfinance.client.industry_models import IndustryClassification
 from kfinance.client.models.date_and_period_models import (
     EstimatePeriodType,
@@ -113,6 +118,7 @@ class KFinanceApiClient:
         """
         if refresh_token is not None:
             self.refresh_token = refresh_token
+            install_refresh_token_log_filter()
             self._access_token_refresh_func: Callable[..., str] = (
                 self._get_access_token_via_refresh_token
             )
@@ -182,11 +188,22 @@ class KFinanceApiClient:
 
     def _get_access_token_via_refresh_token(self) -> str:
         """Get an access token via oauth by submitting a refresh token."""
-        response = requests.get(
-            f"{self.api_host}/oauth2/refresh?refresh_token={self.refresh_token}",
-            timeout=60,
-        )
-        response.raise_for_status()
+        try:
+            response = requests.get(
+                f"{self.api_host}/oauth2/refresh",
+                params={"refresh_token": self.refresh_token},
+                timeout=60,
+            )
+            response.raise_for_status()
+        except requests.RequestException as e:
+            # requests includes the full URL (and with it the refresh token) in its
+            # exception messages, so raise a new error without the original text.
+            status_code = e.response.status_code if e.response is not None else None
+            raise KfinanceAuthenticationError(
+                "Failed to refresh the kFinance access token with the refresh token "
+                f"({describe_request_failure(status_code, e)}).",
+                status_code=status_code,
+            ) from None
         return response.json().get("access_token")
 
     def _get_access_token_via_keypair(self) -> str:
@@ -203,21 +220,29 @@ class KFinanceApiClient:
             self.private_key,
             algorithm="RS256",
         )
-        response = requests.post(
-            f"{self.okta_host}/oauth2/{self.okta_auth_server}/v1/token",
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "application/json",
-            },
-            data={
-                "scope": "kensho:app:kfinance",
-                "grant_type": "client_credentials",
-                "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-                "client_assertion": encoded,
-            },
-            timeout=60,
-        )
-        response.raise_for_status()
+        try:
+            response = requests.post(
+                f"{self.okta_host}/oauth2/{self.okta_auth_server}/v1/token",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                data={
+                    "scope": "kensho:app:kfinance",
+                    "grant_type": "client_credentials",
+                    "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                    "client_assertion": encoded,
+                },
+                timeout=60,
+            )
+            response.raise_for_status()
+        except requests.RequestException as e:
+            status_code = e.response.status_code if e.response is not None else None
+            raise KfinanceAuthenticationError(
+                "Failed to fetch a kFinance access token with the key pair "
+                f"({describe_request_failure(status_code, e)}).",
+                status_code=status_code,
+            ) from None
         return response.json().get("access_token")
 
     @property

@@ -14,6 +14,7 @@ from pydantic import (
     field_validator,
     model_serializer,
 )
+import requests
 
 from kfinance.client.kfinance import Client
 from kfinance.client.permission_models import Permission
@@ -21,9 +22,20 @@ from kfinance.domains.companies.company_models import IdentificationTripleWithCo
 from kfinance.httpx_utils import KfinanceHttpxClient
 
 
+class KfinanceToolError(Exception):
+    """A tool error whose message has been sanitized and is safe to show to tool callers."""
+
+
 def _sanitize_http_error(e: HTTPStatusError) -> str:
     """Return the response body from an HTTPStatusError."""
     return f"{e.response.status_code}: {e.response.text}"
+
+
+def _sanitize_requests_error(e: requests.RequestException) -> str:
+    """Describe a requests error without its message, which contains the full request URL."""
+    if e.response is not None:
+        return f"{e.response.status_code}: {type(e).__name__}"
+    return type(e).__name__
 
 
 class KfinanceTool(BaseTool):
@@ -59,7 +71,12 @@ class KfinanceTool(BaseTool):
         # This behavior matches the langchain handling. See
         # https://github.com/langchain-ai/langchain/blob/ca39680d2ab0d786bc035930778a5787e7bb5e01/libs/core/langchain_core/tools/base.py#L595-L597
         args_dict = {k: v for k, v in args_dict.items() if k in kwargs}
-        result_model = self._run(**args_dict)
+        try:
+            result_model = self._run(**args_dict)
+        except HTTPStatusError as e:
+            raise KfinanceToolError(_sanitize_http_error(e)) from None
+        except requests.RequestException as e:
+            raise KfinanceToolError(_sanitize_requests_error(e)) from None
         return result_model.model_dump(mode="json", exclude_none=True)
 
     async def arun_without_langchain(self, *args: Any, **kwargs: Any) -> dict:
@@ -75,7 +92,9 @@ class KfinanceTool(BaseTool):
         try:
             result_model = await self._arun(**args_dict)
         except HTTPStatusError as e:
-            raise Exception(_sanitize_http_error(e)) from None
+            raise KfinanceToolError(_sanitize_http_error(e)) from None
+        except requests.RequestException as e:
+            raise KfinanceToolError(_sanitize_requests_error(e)) from None
         return result_model.model_dump(mode="json", exclude_none=True)
 
     async def run_with_endpoint_tracking(self, *args: Any, **kwargs: Any) -> Any:
@@ -91,7 +110,9 @@ class KfinanceTool(BaseTool):
             try:
                 result_model = await self._arun(**args_dict)
             except HTTPStatusError as e:
-                raise Exception(_sanitize_http_error(e)) from None
+                raise KfinanceToolError(_sanitize_http_error(e)) from None
+            except requests.RequestException as e:
+                raise KfinanceToolError(_sanitize_requests_error(e)) from None
 
             # After completion of tool data fetching and within the endpoint_tracker context manager scope,
             # dequeue the endpoint_tracker_queue

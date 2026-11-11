@@ -1,13 +1,15 @@
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import click
+from fastmcp.exceptions import ToolError
 from fastmcp.tools import FunctionTool
 from fastmcp.utilities.logging import get_logger
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
+from kfinance.client.auth_errors import KfinanceAuthenticationError
 from kfinance.client.kfinance import Client
 from kfinance.integrations.local_mcp.kfinance_mcp import KfinanceMcp
-from kfinance.integrations.tool_calling.tool_calling_models import KfinanceTool
+from kfinance.integrations.tool_calling.tool_calling_models import KfinanceTool, KfinanceToolError
 
 
 logger = get_logger(__name__)
@@ -15,6 +17,14 @@ logger = get_logger(__name__)
 
 def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTool:
     """Build an MCP FunctionTool from a langchain KfinanceTool."""
+
+    async def run_tool(*args: Any, **kwargs: Any) -> dict:
+        try:
+            return await kfinance_tool.arun_without_langchain(*args, **kwargs)
+        except (KfinanceToolError, KfinanceAuthenticationError) as e:
+            # These messages are sanitized, so pass them on to the client even though
+            # KfinanceMcp masks the details of all other errors.
+            raise ToolError(str(e)) from None
 
     return FunctionTool(
         name=kfinance_tool.name,
@@ -30,8 +40,7 @@ def build_mcp_tool_from_kfinance_tool(kfinance_tool: KfinanceTool) -> FunctionTo
         # for example with integer literals, which our args models allow but the
         # mcp-internal validation disallows.
         # Use the async version to avoid event loop conflicts.
-        # fn=kfinance_tool.arun_without_langchain,
-        fn=kfinance_tool.arun_without_langchain,
+        fn=run_tool,
     )
 
 
@@ -86,7 +95,7 @@ def run_mcp(
         logger.info("The client will be authenticated using a browser")
         kfinance_client = Client()
 
-    kfinance_mcp: KfinanceMcp = KfinanceMcp("Kfinance")
+    kfinance_mcp: KfinanceMcp = KfinanceMcp("Kfinance", mask_error_details=True)
     for langchain_tool in kfinance_client.langchain_tools:
         logger.info("Adding %s to server", langchain_tool.name)
         kfinance_mcp.add_tool(build_mcp_tool_from_kfinance_tool(langchain_tool))
