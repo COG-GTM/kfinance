@@ -39,13 +39,28 @@ This function initializes and starts an MCP server that exposes the kFinance too
 
 The server's full signature is as follows:
 
-`kfinance.mcp [--stdio|-s|--sse|--streamable-http] --refresh-token <refresh-token> --client-id <client-id> --private-key <private-key>`
+`kfinance.mcp [--stdio|-s|--sse|--streamable-http] [--private-key-file <path>]`
+
+Credentials are read from environment variables (or, for the private key, from a file) so that
+they never appear on the command line, where any user on the same host could read them from the
+process list (`ps`, `/proc/<pid>/cmdline`) and where they would be kept in shell history.
+
+| Environment variable        | Purpose                                                    |
+|-----------------------------|------------------------------------------------------------|
+| `KFINANCE_REFRESH_TOKEN`    | OAuth refresh token                                        |
+| `KFINANCE_CLIENT_ID`        | Client id for key-pair authentication                      |
+| `KFINANCE_PRIVATE_KEY`      | Private key for key-pair authentication                    |
+| `KFINANCE_PRIVATE_KEY_FILE` | Path to a file containing the private key (same as `--private-key-file`) |
 
 Authentication Methods (in order of precedence):
 
-1. Refresh Token: Uses an existing refresh token for authentication. The `--refresh-token <refresh-token>` argument must be provided.
-2. Key Pair: Uses client ID and private key for authentication. Both the `--client-id <client-id>` and `--private-key <private-key>` arguments must be provided.
-3. Browser: Falls back to browser-based authentication flow. This occurs if no auth arguments are provided.
+1. Refresh Token: Uses an existing refresh token for authentication. `KFINANCE_REFRESH_TOKEN` must be set.
+2. Key Pair: Uses client ID and private key for authentication. `KFINANCE_CLIENT_ID` must be set, together with either `KFINANCE_PRIVATE_KEY` or a private key file (`--private-key-file <path>` / `KFINANCE_PRIVATE_KEY_FILE`). Restrict the key file to your user, e.g. `chmod 600 <path>`.
+3. Browser: Falls back to browser-based authentication flow. This occurs if no credentials are provided.
+
+The `--refresh-token`, `--client-id` and `--private-key` flags are still accepted for backwards
+compatibility, but `--refresh-token` and `--private-key` are deprecated and print a warning,
+because values passed this way are exposed in the process list.
 
 Transport Layers:
 
@@ -55,14 +70,36 @@ Transport Layers:
 
 Examples:
 ```bash
-# Using stdio with MCP Inspector
-npx @modelcontextprotocol/inspector python -m kfinance.mcp --stdio --refresh-token <token>
+# Read the token without echoing it or writing it to shell history
+read -rs KFINANCE_REFRESH_TOKEN && export KFINANCE_REFRESH_TOKEN
+
+# Using stdio with MCP Inspector: put the token in the `env` block of an MCP config file
+# (see the JSON example below, `chmod 600` it) instead of passing `-e KEY=value`, which
+# would expose the value in the inspector's own command line.
+npx @modelcontextprotocol/inspector --config kfinance_mcp.json --server kfinance
 
 # Using SSE (default)
-python -m kfinance.mcp --refresh-token <token>
+python -m kfinance.mcp
 
-# Using streamable-http
-python -m kfinance.mcp --streamable-http --refresh-token <token>
+# Using streamable-http with a key pair
+KFINANCE_CLIENT_ID=<client-id> python -m kfinance.mcp --streamable-http --private-key-file ~/.kfinance/private_key.pem
+```
+
+MCP client configuration (e.g. Claude Desktop `claude_desktop_config.json`) should pass
+credentials through `env` rather than `args`:
+
+```json
+{
+  "mcpServers": {
+    "kfinance": {
+      "command": "python",
+      "args": ["-m", "kfinance.mcp", "--stdio"],
+      "env": {
+        "KFINANCE_REFRESH_TOKEN": "<refresh-token>"
+      }
+    }
+  }
+}
 ```
 
 ## MCP Proxy
