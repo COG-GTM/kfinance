@@ -1864,6 +1864,11 @@ class Client:
                 )
             )
             server_thread.join()
+            if server_thread.refresh_token is None:
+                raise TimeoutError(
+                    "Browser login did not complete within "
+                    f"{server_thread.login_timeout:g} seconds. Please try again."
+                )
             self.kfinance_api_client = KFinanceApiClient(
                 refresh_token=server_thread.refresh_token,
                 api_host=api_host,

@@ -1,12 +1,19 @@
+from functools import partial
 from http.client import HTTPConnection
 import json
+import socket
 from typing import Any
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from kfinance.client.server_thread import MAX_CONTENT_LENGTH, ServerThread, origin_from_url
+from kfinance.client.server_thread import (
+    MAX_CONTENT_LENGTH,
+    ServerThread,
+    WebRequestHandler,
+    origin_from_url,
+)
 
 
 LOGIN_ORIGIN = "https://kfinance.kensho.com"
@@ -230,3 +237,53 @@ def test_client_browser_login_passes_state_and_origin() -> None:
     assert len(opened_urls) == 1
     assert opened_urls[0].startswith("https://api.example.com/automated_login?")
     assert api_client.call_args.kwargs["refresh_token"] == "alice"
+
+
+def test_foreign_origin_post_to_root_leaves_token_unset(server_thread: ServerThread) -> None:
+    status, headers = _request(
+        server_thread,
+        "POST",
+        "/",
+        body=json.dumps({"refresh_token": "x"}).encode(),
+        headers={"Origin": "https://evil.example", "Content-Type": "text/plain"},
+    )
+    assert status == 403
+    assert "access-control-allow-origin" not in headers
+    assert server_thread.is_alive()
+    assert server_thread.refresh_token is None
+
+
+def test_server_stops_waiting_after_login_timeout() -> None:
+    thread = ServerThread(allowed_origin=LOGIN_ORIGIN, login_timeout=0.5)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert thread.refresh_token is None
+
+
+def test_stalled_connection_does_not_block_login(server_thread: ServerThread) -> None:
+    with patch.object(WebRequestHandler, "timeout", 0.5):
+        stalled = socket.create_connection(("127.0.0.1", server_thread.server_port), timeout=5)
+        try:
+            stalled.sendall(
+                f"POST / HTTP/1.1\r\nOrigin: {LOGIN_ORIGIN}\r\nContent-Length: 100\r\n\r\n".encode()
+            )
+            payload = {"refresh_token": "alice", "state": server_thread.state}
+            assert _post(server_thread, payload) == 200
+        finally:
+            stalled.close()
+    server_thread.join(timeout=5)
+    assert server_thread.refresh_token == "alice"
+
+
+def test_client_browser_login_times_out() -> None:
+    from kfinance.client.kfinance import Client
+
+    with (
+        patch("kfinance.client.kfinance.ServerThread", partial(ServerThread, login_timeout=0.5)),
+        patch("kfinance.client.kfinance.webbrowser.open", return_value=True),
+        patch("kfinance.client.kfinance.KFinanceApiClient") as api_client,
+        pytest.raises(TimeoutError),
+    ):
+        Client(api_host="https://api.example.com")
+    api_client.assert_not_called()

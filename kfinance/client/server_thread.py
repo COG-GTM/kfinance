@@ -3,11 +3,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from secrets import token_urlsafe
 from threading import Thread
+from time import monotonic
 from urllib.parse import urlsplit
 
 
 MAX_CONTENT_LENGTH = 64 * 1024
 REQUEST_TIMEOUT_SECONDS = 10
+LOGIN_TIMEOUT_SECONDS = 300
+POLL_INTERVAL_SECONDS = 1
 
 
 DEFAULT_PORTS = {"http": 80, "https": 443}
@@ -26,26 +29,37 @@ def origin_from_url(url: str) -> str:
 
 
 class ServerThread(Thread):
-    def __init__(self, allowed_origin: str, daemon: bool = True) -> None:
+    def __init__(
+        self,
+        allowed_origin: str,
+        daemon: bool = True,
+        login_timeout: float = LOGIN_TIMEOUT_SECONDS,
+    ) -> None:
         """Construct a thread to hold an HTTPServer and a custom HTTPRequestHandler.
 
         :param allowed_origin: The only browser origin allowed to post the refresh token.
         :type allowed_origin: str
+        :param login_timeout: Seconds to wait for the login before giving up.
+        :type login_timeout: float
         """
         Thread.__init__(self, daemon=daemon)
         self.refresh_token: str | None = None
         self.allowed_origin = allowed_origin.lower()
+        self.login_timeout = login_timeout
         # one-time value that the login page must echo back alongside the refresh token
         self.state = token_urlsafe(32)
         handler = WebRequestHandler(self)
         # not actually binding on port 0, this will ask the kernel to bind to an unused port
         self.server = HTTPServer(("127.0.0.1", 0), handler)
+        # handle_request returns after this many idle seconds so the login deadline is checked
+        self.server.timeout = POLL_INTERVAL_SECONDS
         self.server_port = self.server.server_port
 
     def run(self) -> None:
-        """Run the server, but only until a valid refresh token is written to."""
+        """Run the server until a valid refresh token is written to or the login times out."""
+        deadline = monotonic() + self.login_timeout
         try:
-            while self.refresh_token is None:
+            while self.refresh_token is None and monotonic() < deadline:
                 self.server.handle_request()
         finally:
             self.server.server_close()
@@ -118,7 +132,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            post_dict = json.loads(self.rfile.read(content_length))
+            post_data = self.rfile.read(content_length)
+        except TimeoutError:
+            # a client that stalls mid-body must not hold the single-threaded server
+            self.close_connection = True
+            return
+        try:
+            post_dict = json.loads(post_data)
         except ValueError:
             self._respond(400)
             return
