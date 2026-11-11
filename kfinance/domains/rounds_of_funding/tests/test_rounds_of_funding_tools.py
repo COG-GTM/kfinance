@@ -1,3 +1,4 @@
+from copy import deepcopy
 from decimal import Decimal
 
 import httpx
@@ -706,31 +707,51 @@ class TestRoundsOfFundingRequestBounds:
     ) -> None:
         """
         WHEN the resolved companies have more rounds than MAX_BATCH_TASKS
-        THEN only the most recent rounds of each company get a detail request
+        THEN round details are fetched newest first, only until each company has a total,
+            and at most MAX_BATCH_TASKS detail requests are sent
         """
-        monkeypatch.setattr(rounds_of_funding_tools, "MAX_BATCH_TASKS", 2)
-        rounds = [
-            {
-                "transaction_id": transaction_id,
-                "funding_round_notes": None,
-                "closed_date": closed_date,
-                "funding_type": "Series A",
+        monkeypatch.setattr(rounds_of_funding_tools, "MAX_BATCH_TASKS", 3)
+
+        def rounds(*transaction_ids_and_dates: tuple[int, str | None]) -> dict:
+            return {
+                "rounds_of_funding": [
+                    {
+                        "transaction_id": transaction_id,
+                        "funding_round_notes": None,
+                        "closed_date": closed_date,
+                        "funding_type": "Series A",
+                    }
+                    for transaction_id, closed_date in transaction_ids_and_dates
+                ]
             }
-            for transaction_id, closed_date in [(1, "2020-01-01"), (2, "2023-01-01"), (3, None)]
-        ]
+
         httpx_mock.add_response(
             method="GET",
             url="https://kfinance.kensho.com/api/v1/fundingrounds/target/1",
-            json={"rounds_of_funding": rounds},
+            json=rounds((1, "2020-01-01"), (2, "2023-01-01"), (3, None)),
         )
         httpx_mock.add_response(
             method="GET",
             url="https://kfinance.kensho.com/api/v1/fundingrounds/target/2",
-            json={"rounds_of_funding": []},
+            json=rounds((4, "2022-01-01")),
         )
+        round_without_total = deepcopy(self.funding_round_response)
+        round_without_total["transaction"]["aggregate_amount_raised"] = None
+        # First wave: the most recent round of each company. Round 2 has no total.
         httpx_mock.add_response(
             method="GET",
             url="https://kfinance.kensho.com/api/v1/fundinground/info/2",
+            json=round_without_total,
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url="https://kfinance.kensho.com/api/v1/fundinground/info/4",
+            json=self.funding_round_response,
+        )
+        # Second wave: the next round of C_1, which still has no total. Round 3 is never fetched.
+        httpx_mock.add_response(
+            method="GET",
+            url="https://kfinance.kensho.com/api/v1/fundinground/info/1",
             json=self.funding_round_response,
         )
 
@@ -738,10 +759,11 @@ class TestRoundsOfFundingRequestBounds:
             identifiers=["C_1", "C_2"], httpx_client=httpx_client
         )
 
-        assert resp.errors == [
-            "Round details were only fetched for the 1 most recent rounds of each company."
-        ]
+        assert resp.errors == ["Round details were only fetched for 3 of 4 rounds."]
         assert resp.identifier_results["C_1"].total_rounds == 3
+        assert resp.identifier_results["C_1"].total_capital_raised == 5000000.0
+        assert resp.identifier_results["C_2"].total_capital_raised == 5000000.0
+        assert len(httpx_mock.get_requests()) == 5
 
 
 @pytest.mark.asyncio
