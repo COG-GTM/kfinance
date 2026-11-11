@@ -3,7 +3,7 @@ from hmac import compare_digest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from secrets import token_urlsafe
-from threading import Thread
+from threading import Lock, Thread
 from time import monotonic
 from typing import Any
 from urllib.parse import urlsplit
@@ -48,6 +48,8 @@ class ServerThread(Thread):
         self.refresh_token: str | None = None
         self.allowed_origin = allowed_origin.lower()
         self.login_timeout = login_timeout
+        self._token_lock = Lock()
+        self._accepting = True
         # one-time value that the login page must echo back alongside the refresh token
         self.state = token_urlsafe(32)
         # not actually binding on port 0, this will ask the kernel to bind to an unused port
@@ -66,7 +68,17 @@ class ServerThread(Thread):
             while self.refresh_token is None and monotonic() < deadline:
                 self.server.handle_request()
         finally:
+            with self._token_lock:
+                self._accepting = False
             self.server.server_close()
+
+    def accept_token(self, refresh_token: str) -> bool:
+        """Store the first valid refresh token while the login is still open."""
+        with self._token_lock:
+            if not self._accepting or self.refresh_token is not None:
+                return False
+            self.refresh_token = refresh_token
+            return True
 
 
 class WebRequestHandler(BaseHTTPRequestHandler):
@@ -158,5 +170,4 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._respond(400)
             return
 
-        self.thread.refresh_token = refresh_token
-        self._respond(200)
+        self._respond(200 if self.thread.accept_token(refresh_token) else 409)

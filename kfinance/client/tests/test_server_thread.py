@@ -319,3 +319,17 @@ def test_dripping_connection_does_not_block_login_or_timeout() -> None:
             drip2.close()
     finally:
         drip.close()
+
+
+def test_only_first_token_is_accepted_and_not_after_login_closes() -> None:
+    thread = ServerThread(allowed_origin=LOGIN_ORIGIN, login_timeout=0.5)
+    assert thread.accept_token("alice")
+    assert not thread.accept_token("bob")
+    assert thread.refresh_token == "alice"
+
+    expired = ServerThread(allowed_origin=LOGIN_ORIGIN, login_timeout=0.2)
+    expired.start()
+    expired.join(timeout=5)
+    assert not expired.accept_token("late")
+    assert expired.refresh_token is None
+    thread.server.server_close()
